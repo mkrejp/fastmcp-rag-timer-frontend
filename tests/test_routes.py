@@ -280,3 +280,27 @@ def test_missing_document_and_oversized_image() -> None:
     assert missing.status_code == 404
     assert huge.status_code == 413
     assert bad.status_code == 400
+
+
+def test_page_image_id_is_proxied_for_a_signed_in_user() -> None:
+    """Full-page ids use the same image proxy. Anonymous callers stay out."""
+    page_id = f"page:{_DOC}:1"
+    client = FakeClient(
+        {},
+        images={page_id: ImageBytes(_PNG, "image/jpeg", None)},
+    )
+    signed_in = TestClient(
+        create_app(_settings(), client, forced_user="tester@example.com")
+    )
+    picture = signed_in.get(f"/api/images/{page_id}")
+    assert picture.status_code == 200
+    assert picture.content == _PNG
+    assert client.calls[-1] == ("get_image", {"image_id": page_id})
+    anonymous = TestClient(create_app(_settings(), client))
+    assert anonymous.get(f"/api/images/{page_id}").status_code == 401
+    assert signed_in.get("/api/images/page:not-a-doc:1").status_code == 400
+    page = signed_in.get("/")
+    assert 'id="page-lightbox"' in page.text
+    script = signed_in.get("/static/app.js").text
+    assert 'loading = "lazy"' in script
+    assert "page-hit" in script

@@ -28,7 +28,23 @@ def test_parse_search_passage_with_image() -> None:
     assert passage.doc_id == _DOC
     assert passage.page_number == "2"
     assert passage.image_id == _IMAGE
+    assert passage.page_image_id is None
     assert passage.content == "a chapel on the hill"
+
+
+def test_parse_search_keeps_page_image_id_apart_from_image_id() -> None:
+    """A PDF hit's page image id is not parsed as the embedded picture id."""
+    page_id = f"page:{_DOC}:1"
+    text = (
+        "Source: report.pdf (source_type=pdf_chunk) "
+        f"doc_id={_DOC} page_number=0 page_image_id={page_id} "
+        f"image_id={_IMAGE} url=https://example.test/images/{_DOC}/{_IMAGE}\n"
+        "Content: Praha\n"
+    )
+    passage = parse_search(text).passages[0]
+    assert passage.page_number == "0"
+    assert passage.page_image_id == page_id
+    assert passage.image_id == _IMAGE
 
 
 def test_parse_search_empty_and_error() -> None:

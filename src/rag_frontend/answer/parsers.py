@@ -7,6 +7,18 @@ from dataclasses import dataclass, field
 
 _COORDS = re.compile(r"(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)")
 _IMAGE_PATH = re.compile(r"/images/([0-9a-f-]{36})/([a-f0-9]{16})", re.I)
+_PAGE_ONE = re.compile(
+    r"^page:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:([1-9][0-9]{0,4})$",
+    re.IGNORECASE,
+)
+
+
+def _page_one(page_image_id: str) -> int | None:
+    """Return the 1-based page from a page image id."""
+    match = _PAGE_ONE.fullmatch(page_image_id)
+    if match is None:
+        return None
+    return int(match.group(1))
 
 
 @dataclass
@@ -30,6 +42,8 @@ class Fact:
     obec_id: str = ""
     label: str = "relevant"
     note: str = ""
+    page_image_id: str = ""
+    highlights: list[dict[str, float]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         """Serialize the fact for the JSON API and the synthesis prompt."""
@@ -51,6 +65,9 @@ class Fact:
             "obec_id": self.obec_id,
             "label": self.label,
             "note": self.note,
+            "page_image_id": self.page_image_id,
+            "page_one": _page_one(self.page_image_id),
+            "highlights": self.highlights,
         }
 
 

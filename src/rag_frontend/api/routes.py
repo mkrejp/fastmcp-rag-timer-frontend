@@ -14,6 +14,7 @@ from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from rag_frontend.answer.pages import is_page_image_id
 from rag_frontend.answer.service import answer_query, configure_answer_cache
 from rag_frontend.answer.trace import Trace
 from rag_frontend.auth import install_auth
@@ -59,6 +60,7 @@ class PassageModel(BaseModel):
     page_number: str | None = None
     image_id: str | None = None
     url: str | None = None
+    page_image_id: str | None = None
 
 
 class SearchResponse(BaseModel):
@@ -379,9 +381,10 @@ def _check_doc_id(doc_id: str) -> None:
 
 
 def _check_image_id(image_id: str) -> None:
-    """Reject image ids that are not the server's 16-hex identifiers."""
-    if _IMAGE_ID.fullmatch(image_id) is None:
-        raise HTTPException(status_code=400, detail="Unknown image id.")
+    """Accept a stored picture id or a full-page id ``page:{doc}:{page}``."""
+    if _IMAGE_ID.fullmatch(image_id) or is_page_image_id(image_id):
+        return
+    raise HTTPException(status_code=400, detail="Unknown image id.")
 
 
 def _raise_for_document(text: str) -> None:

@@ -244,6 +244,55 @@ main.answer-layout {
   white-space: pre;
 }
 
+.page-preview {
+  margin: 0.8rem 0;
+}
+
+.page-frame {
+  position: relative;
+  display: inline-block;
+  width: min(16rem, 100%);
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--card);
+  cursor: zoom-in;
+}
+
+.page-frame img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.page-highlights {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.page-hit {
+  position: absolute;
+  background: rgb(214 164 48 / 45%);
+  box-shadow: inset 0 0 0 1px var(--warn);
+}
+
+#page-lightbox {
+  max-width: min(92vw, 52rem);
+  border: 0;
+  padding: 1rem;
+  background: var(--card);
+  color: var(--ink);
+}
+
+#page-lightbox::backdrop {
+  background: rgb(28 25 21 / 72%);
+}
+
+.lightbox-frame {
+  width: min(70vw, 48rem);
+  cursor: default;
+}
+
 #map {
   height: 16rem;
   margin-top: 1rem;

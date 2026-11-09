@@ -85,12 +85,14 @@ function renderStructuredAnswer(body) {
   drawMap(body.objects || []);
   sources.replaceChildren();
   const items = [...(body.objects || []), ...(body.noise || [])];
+  let previews = 0;
   items.forEach((item, index) => {
-    const row = document.createElement("p");
-    row.textContent = `[${index + 1}] ${item.filename || item.title || "zdroj"} ${
-      item.doc_id || ""
-    } ${item.label || ""}`.trim();
-    sources.append(row);
+    if (item.page_image_id && previews < 5 && isRelevant(item)) {
+      previews += 1;
+      sources.append(pageSource(item, index));
+      return;
+    }
+    sources.append(textSource(item, index));
   });
   appendTrace(
     [
@@ -100,6 +102,107 @@ function renderStructuredAnswer(body) {
       `důvod=${debug.reason || ""}`,
     ].join(" "),
   );
+}
+
+function isRelevant(item) {
+  return item.label !== "noise" && item.label !== "homonym";
+}
+
+function textSource(item, index) {
+  const row = document.createElement("p");
+  row.textContent = `[${index + 1}] ${item.filename || item.title || "zdroj"} ${
+    item.doc_id || ""
+  } ${item.label || ""}`.trim();
+  return row;
+}
+
+function pageSource(item, index) {
+  const figure = document.createElement("figure");
+  figure.className = "page-preview";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "page-frame";
+  const img = document.createElement("img");
+  img.className = "shot page-shot";
+  img.alt = "";
+  img.loading = "lazy";
+  const marks = document.createElement("span");
+  marks.className = "page-highlights";
+  marks.append(...highlightMarks(item.highlights));
+  button.append(img, marks);
+  button.addEventListener("click", () => openLightbox(item, img));
+  const caption = document.createElement("figcaption");
+  const pageNo = item.page_one || pageNumberFromId(item.page_image_id);
+  caption.textContent = `[${index + 1}] ${item.filename || item.title || "dokument"}, strana ${pageNo}`;
+  figure.append(button, caption);
+  queueMicrotask(() => loadWhenVisible(img, item.page_image_id));
+  return figure;
+}
+
+function highlightMarks(boxes) {
+  return (boxes || []).map((box) => {
+    const mark = document.createElement("span");
+    mark.className = "page-hit";
+    const x0 = Number(box.x0) || 0;
+    const y0 = Number(box.y0) || 0;
+    const x1 = Number(box.x1) || 0;
+    const y1 = Number(box.y1) || 0;
+    mark.style.left = `${x0 * 100}%`;
+    mark.style.top = `${y0 * 100}%`;
+    mark.style.width = `${Math.max(0, x1 - x0) * 100}%`;
+    mark.style.height = `${Math.max(0, y1 - y0) * 100}%`;
+    return mark;
+  });
+}
+
+function pageNumberFromId(pageImageId) {
+  const match = /^page:[0-9a-f-]{36}:([1-9]\d{0,4})$/i.exec(pageImageId || "");
+  return match ? match[1] : "";
+}
+
+function openLightbox(item, sourceImage) {
+  const dialog = document.querySelector("#page-lightbox");
+  const img = document.querySelector("#lightbox-image");
+  const marks = document.querySelector("#lightbox-marks");
+  const caption = document.querySelector("#lightbox-caption");
+  img.src = sourceImage.currentSrc || sourceImage.src || "";
+  img.alt = sourceImage.alt || "";
+  marks.replaceChildren(...highlightMarks(item.highlights));
+  caption.textContent = `${item.filename || item.title || "dokument"}, strana ${
+    item.page_one || pageNumberFromId(item.page_image_id)
+  }`;
+  if (typeof dialog.showModal === "function" && !dialog.open) {
+    dialog.showModal();
+  }
+}
+
+function loadWhenVisible(img, imageId) {
+  const start = () => {
+    const started = performance.now();
+    void loadImage(imageId).then((result) => {
+      const elapsed = Math.round(performance.now() - started);
+      appendTrace(`page image ${imageId} trvání ${elapsed} ms`);
+      if (result.url) {
+        img.src = result.url;
+        return;
+      }
+      const problem = document.createElement("p");
+      problem.className = "note";
+      problem.textContent = result.error || "Náhled stránky není k dispozici.";
+      img.replaceWith(problem);
+    });
+  };
+  if (typeof IntersectionObserver !== "function") {
+    start();
+    return;
+  }
+  const observer = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) {
+      observer.disconnect();
+      start();
+    }
+  });
+  observer.observe(img);
 }
 
 function reasonText(reason) {
