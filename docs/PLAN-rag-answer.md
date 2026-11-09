@@ -1,6 +1,6 @@
 ---
 id: plan-rag-answer
-summary: Plán české ověřené odpovědi nad fastmcp-rag-timer. Jen návrh, bez implementace.
+summary: Plán české ověřené odpovědi. Novita jen na syntézu, zbytek v kódu, celý web za Google přihlášením.
 parent: index
 children: []
 ---
@@ -14,36 +14,96 @@ Web dnes ukáže syrové hity. Cíl je stejný postup jako TesterVerifier: rozš
 Tok zůstává ten z [architecture.md](architecture.md): prohlížeč mluví jen s procesem v tomto repozitáři, ten drží `MCP_API_TOKEN` a volá `https://rag-timer-00001-production.up.railway.app/mcp/`. LLM krok patří do stejného procesu. Klíč modelu do prohlížeče nepatří.
 
 ```text
-prohlížeč
+prohlížeč (jen s Google session)
   -> POST /api/answer
-    -> expand (varianty dotazu)
-    -> MCP klient (search, katalog, fulltext) paralelně
-    -> parsery a klasifikace šumu
-    -> LLM (jen JSON faktů)
-  -> karty, mapa, obrázky, QA panel
+    -> aliasy a regexy (žádné LLM)
+    -> MCP klient
+    -> parsery, dedup, šum
+    -> 0 nebo 1 volání Novita chat
+  -> karty, mapa, obrázky, QA panel (tokeny)
 ```
 
-MCP server a jeho embeddingy (Novita / FastEmbed) se nemění. Aplikace z nich neskládá věty.
+MCP server a jeho embeddingy se nemění. Search na něm zůstává FastEmbed. Chat je jediné nové Novita volání a je až na frontendu.
 
 ## architektura
 
 Proxy už běží. `HttpMcpClient` v [src/rag_frontend/mcp_client/session.py](../src/rag_frontend/mcp_client/session.py) otevírá Streamable HTTP se stateless voláním a hlavičkou `Authorization: Bearer`. [src/rag_frontend/redact.py](../src/rag_frontend/redact.py) maže hodnotu tokenu z textových odpovědí a z logů. Nová trasa `/api/answer` použije stejného klienta. Druhá veřejná služba není potřeba.
 
-LLM krok je nové odchozí HTTPS volání z téhož procesu, až po složení JSON faktů. Model nedostane bearer token, surový katalog ani celý fulltext. Dostane jen vybrané objekty, homonyma, šum a chybějící obrázky.
+Poskytovatel chatu je Novita, OpenAI-kompatibilní `POST https://api.novita.ai/openai/v1/chat/completions`. RAG server na Novita chodí jen pro ingest embeddingy (`https://api.novita.ai/openai/v1/embeddings`, model `baai/bge-m3`, klíče `BGE_M3_NOVITA_API_KEY`, pak `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`). Search na RAG serveru je FastEmbed a tokeny Novita nespotřebuje. Doklad je [docs/embedding-provider.md](https://github.com/mkrejp/fastmcp-rag-timer/blob/main/docs/embedding-provider.md). Chat klíč se z těch embeddingových jmen nepřebírá.
 
-### co je v repu a na Railway
+Na službě `fastmcp-rag-timer-frontend` chat klíč dnes není. Je tam jen `MCP_API_TOKEN`. Marek doplní novou sealed proměnnou `LLM_API_KEY` jen na tuhle službu. Do gitu se nezapíše. Redaktor v [src/rag_frontend/redact.py](../src/rag_frontend/redact.py) dostane i tuhle hodnotu. Prohlížeč ji neuvidí.
 
-| Místo | Nález |
+| Proměnná | Výchozí |
 | --- | --- |
-| Tento repozitář | Žádný LLM klient, žádný `OPENAI` / `ANTHROPIC` / `NOVITA` klíč. |
-| Služba `fastmcp-rag-timer-frontend` | Z vlastních proměnných jen `MCP_API_TOKEN` plus proměnné, které doplňuje Railway. Chat klíč tam není. |
-| `FastMCP-aggregator` | Bez LLM klíče. |
-| `lunar-mcpx` | `PIPEWORX_API_KEY` a `AUTH_KEY`. To není klíč k chat modelu pro tuhle stránku. |
-| `MCP-inspectoriat` | `RAG_API_TOKEN`, Google OAuth, tajemství inspektoru. Chat klíč to není. |
+| `LLM_BASE_URL` | `https://api.novita.ai/openai/v1` |
+| `LLM_MODEL` | `google/gemma-3-27b-it` |
+| `LLM_MODEL_FALLBACK` | `google/gemma-3-12b-it` |
+| `LLM_API_KEY` | sealed, doplní Marek |
 
-Doporučení: nová runtime proměnná jen na frontendu, sealed, aby ji nešlo vypsat zpět. Jméno a poskytovatel ať zvolí Marek (otázky dole). Do kódu se hodnota nezapíše. Stejný redaktor jako u `MCP_API_TOKEN` pokryje i tento klíč.
+`google/gemma-3-27b-it` je serverless, bez reasoning tokenů, a na češtinu stačí. Ceník $0,119 / M vstup a $0,20 / M výstup. Rozpočet jednoho dotazu je asi 1500 tokenů vstupu a 400 výstupu, tedy zhruba $0,00026. Když má 27B výpadek, stejný request jde jednou na `google/gemma-3-12b-it` ($0,05 / $0,10). Druhý model se nezkouší, když první vrátí text. `max_tokens` je 400, `temperature` 0. To pořád je jedno chat volání na dotaz.
 
-Navržený tvar, dokud Marek neřekne jinak: OpenAI-kompatibilní chat (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`). Hodí se na OpenAI i na Novita chat, ale Novita klíč z RAG serveru na téhle službě není a nesmí se sem kopírovat do gitu.
+### jedno volání a když se nevolá
+
+Na jeden dotaz smí odejít nejvýš jedno chat volání, a jen na syntézu. Rozšíření dotazu, parsování, deduplikace, šum a fulltext jsou regexy a slovník aliasů v kódu.
+
+LLM se nevolá, když:
+
+- po klasifikaci nezbyl žádný relevantní objekt,
+- uživatel nebo env má režim bez LLM,
+- denní limit uživatele nebo globální rozpočet je vyčerpaný.
+
+V těch případech je odpověď složená šablonou z karet a šumu. Šablona řekne, kolik relevantních věcí server má (nula), a vypíše šum. Žádný odhad navíc.
+
+### rozpočet
+
+| Mez | Hodnota |
+| --- | --- |
+| Objekty v JSON pro model | nejvýš 5 |
+| Snípet na objekt | 280 znaků, bez raw OCR (jen `image_id` a příznak, že OCR existuje) |
+| Systémový prompt | pevný, pod 120 slov |
+| Vstup do modelu | cíl ~1500 tokenů |
+| `max_tokens` | 400 |
+| Souběh searchů | 3 |
+| Fulltextů na dotaz | nejvýš 8 ne-AKON dokumentů, které regex nebo search už vybral |
+| Uživatel / den | 40 syntéz nebo 50 000 tokenů (prompt + completion), co nastane dřív |
+| Globálně / den | 500 000 tokenů, pak tvrdý stop |
+
+Počítadlo i cache odpovědí leží na novém volume `/data/answer` (frontend ho dnes nemá, spánek by paměť smazal a limit by přestal platit). Po stopu další dotaz nedostane chat, dostane šablonu a v QA panelu důvod. Novita `usage.prompt_tokens` a `usage.completion_tokens` se uloží k dotazu a ukážou v QA panelu. Do logu jde součet, ne prompt.
+
+Přepínač `ANSWER_USE_LLM` (výchozí `true`). Stejný přepínač v session po přihlášení vypne syntézu pro další dotazy. Zapnout chat nad vyčerpaný rozpočet neumí.
+
+### přihlášení
+
+Celý web je za Google účtem. Schovat tlačítko nestačí. Middleware na Starlette ověří session před stránkou, statickými soubory, `/api/search`, `/api/catalog`, `/api/answer`, `/api/images` i `/api/documents`. Bez session HTML přesměruje na `/auth/login` (302). API vrátí 401 JSON. E-mail mimo allowlist dostane po návratu z Google 403 a session se nezaloží.
+
+Knihovna: Authlib (`authlib.integrations.starlette_client`) plus `SessionMiddleware`, které FastAPI/Starlette už umí. Ruční OAuth z RAG serveru se sem nekopíruje. Rozsah je `openid email profile`.
+
+Veřejné cesty jsou jen `/auth/login`, `/auth/callback`, `/auth/logout` a `GET /health` (prázdné `{"status":"ok"}` pro Railway). Dnešní health check na `/` by po zavedení loginu dostal 302 a deploy by spadl, proto se přepne na `/health`.
+
+Google Cloud Console, typ klienta Web application:
+
+| Pole | Hodnota |
+| --- | --- |
+| Authorized redirect URI (produkce) | `https://fastmcp-rag-timer-frontend-production.up.railway.app/auth/callback` |
+| Redirect pro lokální běh | `http://127.0.0.1:8000/auth/callback` |
+| Consent screen | External, scope email a profile. Dokud je aplikace ve Testing, musí být Marek mezi test users. |
+
+Railway env na `fastmcp-rag-timer-frontend`, hodnoty jen v dashboardu:
+
+| Proměnná | Smysl |
+| --- | --- |
+| `GOOGLE_CLIENT_ID` | z OAuth klienta |
+| `GOOGLE_CLIENT_SECRET` | z OAuth klienta |
+| `GOOGLE_ALLOWED_EMAILS` | čárkou oddělené adresy, porovnání bez velikosti písmen |
+| `SESSION_SECRET` | náhodný řetězec, ne prázdný |
+| `PUBLIC_BASE_URL` | `https://fastmcp-rag-timer-frontend-production.up.railway.app` |
+| `LLM_API_KEY` | sealed, nová proměnná, doplní Marek |
+| `LLM_BASE_URL` | `https://api.novita.ai/openai/v1` |
+| `LLM_MODEL` | `google/gemma-3-27b-it` |
+| `LLM_MODEL_FALLBACK` | `google/gemma-3-12b-it` |
+| `ANSWER_USE_LLM` | `true` / `false` |
+
+Cookie `SameSite=Lax`, `https_only` když `PUBLIC_BASE_URL` začíná na `https://`. Limit na uživatele je klíčovaný e-mailem ze session, ne IP.
 
 ## soubory
 
@@ -52,7 +112,7 @@ Měnit:
 | Soubor | Změna |
 | --- | --- |
 | [src/rag_frontend/api/routes.py](../src/rag_frontend/api/routes.py) | `POST /api/answer`. Stávající `/api/search` a katalog nechat pro QA panel. |
-| [src/rag_frontend/config.py](../src/rag_frontend/config.py) | URL, model a klíč LLM, TTL cache. Bez klíče trasa vrátí 503, stránka se načte. |
+| [src/rag_frontend/config.py](../src/rag_frontend/config.py) | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`, přepínač a limity. Bez klíče syntéza spadne na šablonu. |
 | [src/rag_frontend/web/index.html](../src/rag_frontend/web/index.html) | Jedna stránka: odpověď, karty, mapa, QA panel. |
 | [src/rag_frontend/web/app.js](../src/rag_frontend/web/app.js) | Vykreslení odpovědi. Žádný MCP ani LLM klíč. |
 | [src/rag_frontend/web/styles.css](../src/rag_frontend/web/styles.css) | Karty a odlišení centroidu. |
@@ -92,7 +152,7 @@ Odpověď 200:
 | `images` | `{image_id, doc_id, caption}` pro proxy. |
 | `debug` | Varianty, latence, počty hitů. Bez tokenu a bez LLM klíče. |
 
-Prázdný dotaz: 400, bez volání ven. Chybí `MCP_API_TOKEN` nebo LLM klíč: 503 s větou, že údaj není nastaven, ne s jeho hodnotou.
+Prázdný dotaz: 400, bez volání ven. Chybí `MCP_API_TOKEN`: 503, bez hodnoty tokenu. Chybí `LLM_API_KEY`: šablona, chat se nevolá.
 
 Obrázky dál přes existující `GET /api/images/{image_id}` (`get_image`). Nová cesta `/api/rag/image/{doc_id}/{image_id}` není potřeba: server hledá `image_id` globálně a proxy token nepřidává do URL.
 
@@ -107,7 +167,7 @@ Obrázky dál přes existující `GET /api/images/{image_id}` (`get_image`). Nov
    - `obce.json`: `name`, `id`, `nationalCode`. Prefix `id` (CZ08 Moravskoslezský, CZ04 Ústecký, …) proti očekávanému kraji. Jiný kraj = homonymum.
    - `pdf_image`: OCR text plus `image_id`. Bayty jen přes proxy.
 5. **Třídy.** `relevant` (entita ve správném kontextu), `homonym`, `noise` (entita v obsahu není; první hit bez entity = poznámka „chyba řazení“), `no_image` (sekce bez `Obrázky`).
-6. **Syntéza.** Jedno chat volání. Když LLM klíč není, API vrátí karty a šum bez složené věty, ať se dá ověřit retrieval.
+6. **Syntéza.** Nejvýš jedno volání `google/gemma-3-27b-it`. Bez relevantního objektu, bez klíče, při vypnutém přepínači nebo po vyčerpání rozpočtu se model nevolá a větu složí šablona.
 
 Latence ze SPEC: studený search až desítky sekund, pět variant sekvenčně asi 8–11 s. Varianty musí běžet paralelně. Limit souběhu ať je malý (například 3), ať server nezavalíme.
 
@@ -176,15 +236,7 @@ Bez sítě. MCP klient i LLM klient se nahradí záznamem.
 
 ## otevřené otázky
 
-Otázky jsou i ve zprávě k tomuto plánu. Tady je kanonický seznam.
+Model, poskytovatel, jména `LLM_MODEL` / `LLM_BASE_URL` / `LLM_API_KEY`, jedno chat volání a přihlášení jsou rozhodnuté.
 
-1. Který chat model a který účet? OpenAI, Novita chat, nebo něco jiného? Jak se jmenuje runtime proměnná?
-2. Smí expanze použít LLM, nebo první verze jen pravidla a alias slovník?
-3. Kdo dodá aliasy (Wrschowitz, sousední čtvrti) a pro které entity? Prázdný slovník neumí historické názvy.
-4. Jaký kraj je „správný“, když uživatel nenapíše Prahu? Vršovice bez „Praha 10“ jsou v datech tři.
-5. Fulltext: všechny ne-AKON dokumenty při každém dotazu, nebo jen korpusy mimo pohlednice, které Marek vyjmenuje?
-6. Má syrový search na stránce zůstat, nebo ho nahradí jen odpověď a QA panel?
-7. Leaflet a OSM dlaždice z veřejného serveru jsou přijatelné?
-8. TTL cache 10 minut stačí, nebo se má cache rušit jen restartem?
-9. Limit souběžných `search_domain_knowledge` (návrh 3) a strop fulltextů na jeden dotaz?
-10. Když LLM klíč chybí, stačí karty bez složené věty, nebo se má formulář schovat?
+1. Kdo dodá slovník aliasů (Wrschowitz, sousední čtvrti) a pro které entity? Prázdný slovník historický název neuhodne.
+2. Když dotaz nejmenuje kraj, podle čeho se homonymum v `obce.json` oddělí od té správné obce? Vršovice bez „Praha 10“ jsou v datech tři.
