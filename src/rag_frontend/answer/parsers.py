@@ -84,8 +84,17 @@ def facts_from_passage(
     ]
 
 
-def parse_building_hints(filename: str, doc_id: str, text: str) -> list[Fact]:
-    """Split ``##`` sections and read the address, GPS, and confidence fields."""
+def parse_building_hints(
+    filename: str,
+    doc_id: str,
+    text: str,
+    entity: re.Pattern[str] | None = None,
+) -> list[Fact]:
+    """Split ``##`` sections and read the address, GPS, and confidence fields.
+
+    When ``entity`` is set, keep only sections whose title, address, or note
+    matches. The caller must pass the whole file, not a short window.
+    """
     chunks = re.split(r"\n(?=## )", text.strip())
     facts: list[Fact] = []
     for chunk in chunks:
@@ -95,6 +104,8 @@ def parse_building_hints(filename: str, doc_id: str, text: str) -> list[Fact]:
         title = lines[0].lstrip("#").strip()
         address = _field(chunk, "Adresa")
         note = _field(chunk, "Poznámka")
+        if entity is not None and entity.search(f"{title}\n{address}\n{note}") is None:
+            continue
         images = _image_ids(chunk)
         facts.append(
             Fact(

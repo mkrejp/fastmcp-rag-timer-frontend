@@ -10,7 +10,7 @@ from typing import Any
 
 from rag_frontend.answer.cache import TtlCache
 from rag_frontend.answer.expand import entity_pattern
-from rag_frontend.answer.parsers import Fact, facts_from_passage
+from rag_frontend.answer.parsers import Fact, facts_from_passage, parse_building_hints
 from rag_frontend.answer.trace import Trace
 from rag_frontend.mcp_client.parse import parse_catalog, parse_search
 from rag_frontend.mcp_client.session import McpToolClient
@@ -32,7 +32,7 @@ async def retrieve(
     variants: list[str],
     trace: Trace,
 ) -> tuple[list[Fact], dict[str, float], str]:
-    """Search variants, then read at most eight non-postcard full texts."""
+    """Search variants, then read priority non-postcard full texts."""
     timings: dict[str, float] = {}
     started = time.perf_counter()
     catalog = await _catalog(client, trace)
@@ -63,9 +63,18 @@ async def retrieve(
         (time.perf_counter() - search_started) * 1000, 1
     )
     facts = _dedup([fact for batch in batches for fact in batch])
-    extra = await _fulltext(client, query, catalog, facts, trace)
-    timings["get_document_text"] = extra[1]
-    return _dedup(facts + extra[0]), timings, version
+    snippets, elapsed, loaded, hint_docs = await _fulltext(
+        client, query, catalog, facts, trace
+    )
+    timings["get_document_text"] = elapsed
+    pattern = entity_pattern(query)
+    verified = reverify_facts(facts, loaded, pattern)
+    verified = [
+        item
+        for item in verified
+        if not (item.doc_id in hint_docs and item.kind == "building")
+    ]
+    return _dedup(verified + snippets), timings, version
 
 
 async def _catalog(client: McpToolClient, trace: Trace) -> list[dict[str, Any]]:
@@ -92,68 +101,165 @@ async def _catalog(client: McpToolClient, trace: Trace) -> list[dict[str, Any]]:
     return documents
 
 
+def select_fulltext_rows(
+    catalog: list[dict[str, Any]],
+    search_doc_ids: set[str],
+    pattern: re.Pattern[str],
+    *,
+    limit: int = 8,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Prefer search hits, building-hints, and obce.json over other files.
+
+    Priority rows are always kept. The cap applies only to further filename
+    matches. AKON postcards and empty chunk counts are skipped.
+    """
+    priority: list[dict[str, Any]] = []
+    extras: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in catalog:
+        filename = str(row.get("filename") or "")
+        doc_id = str(row.get("doc_id") or "")
+        chunks = row.get("chunk_count")
+        if (
+            not doc_id
+            or doc_id in seen
+            or filename.lower().startswith("akon_")
+            or not isinstance(chunks, int)
+            or chunks <= 0
+        ):
+            continue
+        seen.add(doc_id)
+        preferred = (
+            doc_id in search_doc_ids
+            or "building-hints" in filename
+            or "obce.json" in filename
+        )
+        if preferred:
+            priority.append(row)
+        elif pattern.search(filename):
+            extras.append(row)
+    if len(priority) >= limit:
+        chosen = priority
+    else:
+        chosen = priority + extras[: limit - len(priority)]
+    priority_ids = {id(row) for row in priority}
+    extra_ids = {
+        str(row["doc_id"]) for row in chosen if id(row) not in priority_ids
+    }
+    return chosen, extra_ids
+
+
+def reverify_facts(
+    facts: list[Fact],
+    fulltext: dict[str, str],
+    pattern: re.Pattern[str],
+) -> list[Fact]:
+    """Drop non-postcard hits whose full document never names the entity."""
+    checked: list[Fact] = []
+    for fact in facts:
+        if fact.kind == "akon" or not fact.doc_id or fact.doc_id not in fulltext:
+            checked.append(fact)
+            continue
+        if pattern.search(fulltext[fact.doc_id]) is None:
+            fact.label = "noise"
+            fact.note = "jen vektorová podobnost"
+        checked.append(fact)
+    return checked
+
+
 async def _fulltext(
     client: McpToolClient,
     query: str,
     catalog: list[dict[str, Any]],
     found: list[Fact],
     trace: Trace,
-) -> tuple[list[Fact], float]:
-    """Read up to eight non-AKON documents that likely mention the entity."""
+) -> tuple[list[Fact], float, dict[str, str], set[str]]:
+    """Read priority non-AKON documents and record files with no entity match."""
     pattern = entity_pattern(query)
-    chosen: list[dict[str, Any]] = []
-    seen = {fact.doc_id for fact in found}
-    for row in catalog:
-        filename = str(row.get("filename") or "")
-        doc_id = str(row.get("doc_id") or "")
-        if not doc_id or filename.lower().startswith("akon_"):
-            continue
-        interesting = (
-            "building-hints" in filename
-            or "obce.json" in filename
-            or pattern.search(filename) is not None
-            or doc_id in seen
-        )
-        if interesting:
-            chosen.append(row)
-        if len(chosen) >= 8:
-            break
+    search_ids = {fact.doc_id for fact in found if fact.doc_id}
+    chosen, extra_ids = select_fulltext_rows(catalog, search_ids, pattern)
     started = time.perf_counter()
     snippets: list[Fact] = []
+    loaded: dict[str, str] = {}
+    hint_docs: set[str] = set()
+    absent: list[dict[str, object]] = []
     for row in chosen:
         doc_id = str(row["doc_id"])
         filename = str(row.get("filename") or "")
-        text = _FULLTEXT.get(doc_id)
-        if isinstance(text, str):
-            await trace.event("cache", target="fulltext", result="hit", doc_id=doc_id)
+        text, failed = await _load_text(client, doc_id, trace)
+        if failed:
+            continue
+        loaded[doc_id] = text
+        if "building-hints" in filename:
+            hint_docs.add(doc_id)
+            sections = parse_building_hints(filename, doc_id, text, entity=pattern)
+            matched = bool(sections)
+            window_chars = sum(len(section.text) for section in sections)
+            snippets.extend(sections)
         else:
-            started_one = time.perf_counter()
-            text = await client.call_tool("get_document_text", {"doc_id": doc_id})
-            missing = text.startswith("Document not found")
-            failed = text.startswith("Error ") or missing
-            await trace.event(
-                "mcp",
-                tool="get_document_text",
-                arguments={"doc_id": doc_id},
-                hits=0 if failed else 1,
-                duration_ms=round((time.perf_counter() - started_one) * 1000, 1),
-                error=failed,
-            )
-            if not failed:
-                _FULLTEXT.set(doc_id, text)
-        if pattern.search(text):
-            window = _window(text, pattern)
-            snippets.extend(
-                facts_from_passage(
-                    filename=filename,
+            match = pattern.search(text)
+            window = _window(text, pattern) if match else ""
+            matched = match is not None
+            window_chars = len(window)
+            if matched:
+                snippets.extend(
+                    facts_from_passage(
+                        filename=filename,
+                        doc_id=doc_id,
+                        page=None,
+                        image_id=None,
+                        content=window,
+                    )
+                )
+        await trace.event(
+            "fulltext",
+            filename=filename,
+            match=matched,
+            window_chars=window_chars,
+        )
+        if not matched and doc_id in extra_ids:
+            absent.append({"filename": filename, "matches": 0})
+            snippets.append(
+                Fact(
+                    kind="absent",
+                    title=filename,
+                    text="",
                     doc_id=doc_id,
-                    page=None,
-                    image_id=None,
-                    content=window,
+                    filename=filename,
+                    label="noise",
+                    note="0 shod",
                 )
             )
+    await trace.event("absent_corpora", files=absent, count=len(absent))
     elapsed = round((time.perf_counter() - started) * 1000, 1)
-    return snippets, elapsed
+    return snippets, elapsed, loaded, hint_docs
+
+
+async def _load_text(
+    client: McpToolClient,
+    doc_id: str,
+    trace: Trace,
+) -> tuple[str, bool]:
+    """Return cached or freshly read full text, and whether the read failed."""
+    cached = _FULLTEXT.get(doc_id)
+    if isinstance(cached, str):
+        await trace.event("cache", target="fulltext", result="hit", doc_id=doc_id)
+        return cached, False
+    started = time.perf_counter()
+    text = await client.call_tool("get_document_text", {"doc_id": doc_id})
+    missing = text.startswith("Document not found")
+    failed = text.startswith("Error ") or missing
+    await trace.event(
+        "mcp",
+        tool="get_document_text",
+        arguments={"doc_id": doc_id},
+        hits=0 if failed else 1,
+        duration_ms=round((time.perf_counter() - started) * 1000, 1),
+        error=failed,
+    )
+    if not failed:
+        _FULLTEXT.set(doc_id, text)
+    return text, failed
 
 
 def _facts_from_search(text: str) -> list[Fact]:

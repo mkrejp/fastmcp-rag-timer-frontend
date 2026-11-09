@@ -1,0 +1,21 @@
+{
+  "vršovice": ["Wrschowitz"],
+  "vinohrady": ["Weinberge"],
+  "smíchov": ["Smichow"],
+  "žižkov": ["Zizkow"],
+  "karlín": ["Karolinenthal"],
+  "holešovice": ["Holleschowitz"],
+  "dejvice": ["Dejwitz"],
+  "libeň": ["Lieben"],
+  "hradčany": ["Hradschin"],
+  "malá strana": ["Kleinseite"],
+  "nusle": ["Nussl"],
+  "vyšehrad": ["Wyschehrad"],
+  "josefov": ["Josefstadt"],
+  "bubeneč": ["Bubentsch"],
+  "staré město": ["Altstadt"],
+  "nové město": ["Neustadt"],
+  "brno": ["Brünn"],
+  "vídeň": ["Wien", "Wienzeile"],
+  "wien": ["Wienzeile"]
+}

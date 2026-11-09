@@ -14,6 +14,8 @@ SYSTEM_PROMPT = (
     "podle pořadí objects. "
     "Pak odstavec o obrázcích: má je, nebo nemá, a jestli je GPS bod nebo centroid. "
     "Poslední odstavec nadpis 'Co server neví / omezení' a homonyma i šum. "
+    "Když poznámka zní 'kraj není v dotazu', napiš výslovně, že kraj v dotazu "
+    "chybí a všechny obce stejného jména jsou homonyma. "
     "Homonymum nepleť do jistých vět. Nevymýšlej URL ani doc_id."
 )
 
@@ -29,8 +31,21 @@ def user_payload(
         {
             "query": query,
             "variants": variants,
-            "objects": [item.to_dict() for item in relevant],
-            "noise": [item.to_dict() for item in noise[:8]],
+            "objects": [item.to_dict() for item in relevant[:5]],
+            "images": [
+                {"image_id": image_id, "caption": item.title[:120]}
+                for item in relevant[:5]
+                for image_id in item.image_ids
+            ],
+            "noise": [
+                {
+                    "title": item.title,
+                    "filename": item.filename,
+                    "label": item.label,
+                    "note": item.note,
+                }
+                for item in noise[:8]
+            ],
         },
         ensure_ascii=False,
     )
@@ -68,6 +83,10 @@ def template_answer(query: str, relevant: list[Fact], noise: list[Fact]) -> str:
     elif relevant:
         paragraphs.append("K těmto záznamům server obrázek nemá.")
     limits = ["**Co server neví / omezení**"]
+    if any(fact.note == "kraj není v dotazu" for fact in noise):
+        limits.append(
+            "Kraj není v dotazu, takže všechny záznamy z obce.json jsou homonyma."
+        )
     if noise:
         described = "; ".join(
             f"{fact.title} ({fact.filename})"
