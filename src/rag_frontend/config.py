@@ -31,7 +31,7 @@ def load_settings() -> Settings:
     """
     token = os.environ.get("MCP_API_TOKEN", "").strip()
     url = os.environ.get("MCP_SERVER_URL", DEFAULT_MCP_SERVER_URL).strip()
-    host = os.environ.get("HOST", "127.0.0.1").strip() or "127.0.0.1"
+    host = os.environ.get("HOST", "0.0.0.0").strip() or "0.0.0.0"
     port = int(os.environ.get("PORT", "8000"))
     return Settings(
         mcp_server_url=url or DEFAULT_MCP_SERVER_URL,
