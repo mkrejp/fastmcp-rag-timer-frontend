@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RAG query</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="title">
+        <p class="eyebrow">fastmcp-rag-timer</p>
+        <h1>Ask the datastore</h1>
+      </div>
+      <form id="query-form">
+        <label for="query">Question</label>
+        <textarea
+          id="query"
+          name="query"
+          rows="3"
+          required
+          placeholder="What is stored about this place?"
+        ></textarea>
+        <div class="form-row">
+          <label class="limit" for="limit">
+            Results
+            <input id="limit" name="limit" type="number" min="1" max="20" value="3" />
+          </label>
+          <label class="check" for="include-images">
+            <input id="include-images" name="include_images" type="checkbox" checked />
+            Also search stored pictures
+          </label>
+          <button type="submit">Search</button>
+        </div>
+      </form>
+      <p id="status" role="status"></p>
+    </header>
+    <main>
+      <section class="conversation" aria-labelledby="conversation-heading">
+        <h2 id="conversation-heading">Conversation</h2>
+        <ol id="transcript"></ol>
+      </section>
+      <aside class="catalog" aria-labelledby="catalog-heading">
+        <h2 id="catalog-heading">Documents</h2>
+        <p id="catalog-note"></p>
+        <ul id="catalog"></ul>
+      </aside>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
