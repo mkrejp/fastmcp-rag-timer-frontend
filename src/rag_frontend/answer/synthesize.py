@@ -19,6 +19,7 @@ class Synthesis:
     completion_tokens: int
     model: str
     calls: int
+    http_status: int
 
 
 class LlmClient:
@@ -34,7 +35,7 @@ class LlmClient:
             text, prompt, completion = await self._once(
                 self._settings.llm_model, user_json
             )
-            return Synthesis(text, prompt, completion, self._settings.llm_model, 1)
+            return Synthesis(text, prompt, completion, self._settings.llm_model, 1, 200)
         except httpx.HTTPError:
             if self._settings.llm_model_fallback == self._settings.llm_model:
                 raise
@@ -42,7 +43,12 @@ class LlmClient:
                 self._settings.llm_model_fallback, user_json
             )
             return Synthesis(
-                text, prompt, completion, self._settings.llm_model_fallback, 2
+                text,
+                prompt,
+                completion,
+                self._settings.llm_model_fallback,
+                2,
+                200,
             )
 
     async def _once(self, model: str, user_json: str) -> tuple[str, int, int]:
@@ -51,7 +57,7 @@ class LlmClient:
         payload = {
             "model": model,
             "temperature": 0,
-            "max_tokens": 400,
+            "max_tokens": 600,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_json},
@@ -69,3 +75,15 @@ class LlmClient:
             int(usage.get("prompt_tokens") or 0),
             int(usage.get("completion_tokens") or 0),
         )
+
+
+def estimate_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    """Rough Novita price for the two Gemma models. Unknown models cost 0."""
+    rates = {
+        "google/gemma-3-27b-it": (0.119, 0.20),
+        "google/gemma-3-12b-it": (0.05, 0.10),
+    }
+    prompt_rate, completion_rate = rates.get(model, (0.0, 0.0))
+    cost = prompt_tokens / 1_000_000 * prompt_rate
+    cost += completion_tokens / 1_000_000 * completion_rate
+    return round(cost, 6)

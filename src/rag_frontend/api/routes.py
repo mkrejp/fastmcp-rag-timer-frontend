@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from rag_frontend.answer.service import answer_query, configure_answer_cache
+from rag_frontend.answer.trace import Trace
 from rag_frontend.auth import install_auth
 from rag_frontend.config import Settings
 from rag_frontend.mcp_client.parse import (
@@ -244,6 +247,47 @@ def create_app(
             email=email,
             use_llm=body.use_llm,
         )
+
+    @app.post("/api/answer/stream")
+    async def answer_stream(body: AnswerRequest, request: Request) -> StreamingResponse:
+        """Stream the same answer as server-sent events for the debug frame."""
+        query = body.query.strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="Enter a question.")
+        tool_client = _require_client(request)
+        user = request.session.get("user") or {}
+        email = str(user.get("email") or forced_user or "")
+
+        async def events() -> AsyncIterator[str]:
+            queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
+
+            async def hook(item: dict[str, object]) -> None:
+                await queue.put(item)
+
+            async def run() -> None:
+                try:
+                    result = await answer_query(
+                        tool_client,
+                        settings,
+                        query,
+                        email=email,
+                        use_llm=body.use_llm,
+                        trace=Trace(hook),
+                    )
+                    await queue.put({"step": "done", "answer": result})
+                except Exception as exc:
+                    await queue.put({"step": "error", "error": type(exc).__name__})
+                await queue.put(None)
+
+            task = asyncio.create_task(run())
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            await task
+
+        return StreamingResponse(events(), media_type="text/event-stream")
 
     @app.get("/")
     async def index() -> Response:

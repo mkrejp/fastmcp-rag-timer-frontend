@@ -11,6 +11,7 @@ from typing import Any
 from rag_frontend.answer.cache import TtlCache
 from rag_frontend.answer.expand import entity_pattern
 from rag_frontend.answer.parsers import Fact, facts_from_passage
+from rag_frontend.answer.trace import Trace
 from rag_frontend.mcp_client.parse import parse_catalog, parse_search
 from rag_frontend.mcp_client.session import McpToolClient
 
@@ -29,45 +30,66 @@ async def retrieve(
     client: McpToolClient,
     query: str,
     variants: list[str],
+    trace: Trace,
 ) -> tuple[list[Fact], dict[str, float], str]:
     """Search variants, then read at most eight non-postcard full texts."""
     timings: dict[str, float] = {}
     started = time.perf_counter()
-    catalog = await _catalog(client)
+    catalog = await _catalog(client, trace)
     timings["list_documents"] = round((time.perf_counter() - started) * 1000, 1)
     version = _version(catalog)
     semaphore = asyncio.Semaphore(3)
-    search_started = time.perf_counter()
 
     async def _one(variant: str) -> list[Fact]:
         async with semaphore:
+            call_started = time.perf_counter()
             text = await client.call_tool(
                 "search_domain_knowledge",
                 {"query": variant, "limit": 8},
             )
-        return _facts_from_search(text)
+        facts = _facts_from_search(text)
+        await trace.event(
+            "mcp",
+            tool="search_domain_knowledge",
+            arguments={"query": variant, "limit": 8},
+            hits=len(facts),
+            duration_ms=round((time.perf_counter() - call_started) * 1000, 1),
+        )
+        return facts
 
+    search_started = time.perf_counter()
     batches = await asyncio.gather(*[_one(variant) for variant in variants])
     timings["search_domain_knowledge"] = round(
         (time.perf_counter() - search_started) * 1000, 1
     )
     facts = _dedup([fact for batch in batches for fact in batch])
-    extra = await _fulltext(client, query, catalog, facts)
+    extra = await _fulltext(client, query, catalog, facts, trace)
     timings["get_document_text"] = extra[1]
     return _dedup(facts + extra[0]), timings, version
 
 
-async def _catalog(client: McpToolClient) -> list[dict[str, Any]]:
-    """Return the cached catalog."""
+async def _catalog(client: McpToolClient, trace: Trace) -> list[dict[str, Any]]:
+    """Return the cached catalog and record hit or miss."""
     cached = _CATALOG.get("catalog")
     if isinstance(cached, list):
+        await trace.event("cache", target="catalog", result="hit", hits=len(cached))
         return cached
+    await trace.event("cache", target="catalog", result="miss")
+    started = time.perf_counter()
     text = await client.call_tool("list_documents", {"since": ""})
     view = parse_catalog(text)
-    if view.error:
-        return []
-    _CATALOG.set("catalog", list(view.documents))
-    return list(view.documents)
+    documents = [] if view.error else list(view.documents)
+    await trace.event(
+        "mcp",
+        tool="list_documents",
+        arguments={"since": ""},
+        hits=len(documents),
+        duration_ms=round((time.perf_counter() - started) * 1000, 1),
+        error=bool(view.error),
+    )
+    if not view.error:
+        _CATALOG.set("catalog", documents)
+    return documents
 
 
 async def _fulltext(
@@ -75,6 +97,7 @@ async def _fulltext(
     query: str,
     catalog: list[dict[str, Any]],
     found: list[Fact],
+    trace: Trace,
 ) -> tuple[list[Fact], float]:
     """Read up to eight non-AKON documents that likely mention the entity."""
     pattern = entity_pattern(query)
@@ -101,10 +124,22 @@ async def _fulltext(
         doc_id = str(row["doc_id"])
         filename = str(row.get("filename") or "")
         text = _FULLTEXT.get(doc_id)
-        if not isinstance(text, str):
+        if isinstance(text, str):
+            await trace.event("cache", target="fulltext", result="hit", doc_id=doc_id)
+        else:
+            started_one = time.perf_counter()
             text = await client.call_tool("get_document_text", {"doc_id": doc_id})
             missing = text.startswith("Document not found")
-            if not text.startswith("Error ") and not missing:
+            failed = text.startswith("Error ") or missing
+            await trace.event(
+                "mcp",
+                tool="get_document_text",
+                arguments={"doc_id": doc_id},
+                hits=0 if failed else 1,
+                duration_ms=round((time.perf_counter() - started_one) * 1000, 1),
+                error=failed,
+            )
+            if not failed:
                 _FULLTEXT.set(doc_id, text)
         if pattern.search(text):
             window = _window(text, pattern)

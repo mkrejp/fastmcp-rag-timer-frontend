@@ -98,7 +98,7 @@ def test_catalog_and_page_load() -> None:
     http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
     page = http.get("/")
     assert page.status_code == 200
-    assert "Ask the datastore" in page.text
+    assert "Co o tom ví server" in page.text
     catalog = http.get("/api/catalog")
     assert catalog.status_code == 200
     row = catalog.json()["documents"][0]

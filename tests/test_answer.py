@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi.testclient import TestClient
 
 from rag_frontend.answer.classify import classify_facts
 from rag_frontend.answer.expand import entity_pattern, expand_query, prague_scoped
-from rag_frontend.answer.parsers import facts_from_passage
+from rag_frontend.answer.parsers import Fact, facts_from_passage
+from rag_frontend.answer.prompt import template_answer
 from rag_frontend.api.routes import create_app
 from rag_frontend.config import LLM_KEY_ENV, Settings, load_settings
 from rag_frontend.mcp_client.session import ImageBytes
@@ -130,6 +132,66 @@ def test_answer_skips_llm_without_relevant_hits(monkeypatch: object) -> None:
     assert calls == []
     assert "llm-secret" not in response.text
     assert "mcp-secret" not in response.text
+    steps = [item["step"] for item in body["debug"]["trace"]]
+    assert "query" in steps
+    assert "expand" in steps
+    assert "mcp" in steps
+    assert "llm" in steps
+    joined = json.dumps(body["debug"]["trace"])
+    assert "Bearer" not in joined
+
+
+def test_answer_stream_is_signed_in_only() -> None:
+    """The live trace is not available without a session."""
+    http = TestClient(create_app(_settings(), FakeClient({})))
+    response = http.post(
+        "/api/answer/stream",
+        json={"query": "Vršovice"},
+    )
+    assert response.status_code == 401
+
+
+def test_template_is_prose_not_a_hit_list() -> None:
+    """The no-model answer is paragraphs, including the limits section."""
+    fact = Fact(
+        kind="building",
+        title="Nájemní domy čp. 486",
+        text="hypotéza",
+        doc_id="11111111-1111-1111-1111-111111111111",
+        filename="nove-stavby-building-hints.txt",
+        address="Žitomírská 9–13, Praha 10-Vršovice",
+        confidence=0.45,
+        gps=(50.068522, 14.4555164),
+        gps_kind="point",
+        note="obrázek nemá",
+    )
+    noise = Fact(
+        kind="obec",
+        title="Vršovice",
+        text="jiná obec",
+        doc_id="22222222-2222-2222-2222-222222222222",
+        filename="obce.json",
+        label="homonym",
+        note="jiná obec stejného jména",
+    )
+    text = template_answer("Vršovice a secese", [fact], [noise])
+    assert text.startswith("**K dotazu")
+    assert "\n- " not in text
+    assert "Co server neví / omezení" in text
+    assert "Žitomírská" in text
+    assert "[1]" in text
+
+
+def test_page_is_answer_first() -> None:
+    """The main form asks for an answer and does not list the catalog."""
+    http = TestClient(
+        create_app(_settings(), FakeClient({}), forced_user="tester@example.com")
+    )
+    page = http.get("/")
+    assert page.status_code == 200
+    assert "Co o tom ví server" in page.text
+    assert 'id="catalog"' not in page.text
+    assert "/api/search" not in page.text
 
 
 def test_anonymous_catalog_does_not_call_mcp() -> None:
