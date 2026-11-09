@@ -31,14 +31,14 @@ Proxy už běží. `HttpMcpClient` v [src/rag_frontend/mcp_client/session.py](..
 
 Poskytovatel chatu je Novita, OpenAI-kompatibilní `POST https://api.novita.ai/openai/v1/chat/completions`. RAG server na Novita chodí jen pro ingest embeddingy (`https://api.novita.ai/openai/v1/embeddings`, model `baai/bge-m3`, klíče `BGE_M3_NOVITA_API_KEY`, pak `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`). Search na RAG serveru je FastEmbed a tokeny Novita nespotřebuje. Doklad je [docs/embedding-provider.md](https://github.com/mkrejp/fastmcp-rag-timer/blob/main/docs/embedding-provider.md). Chat klíč se z těch embeddingových jmen nepřebírá.
 
-Na službě `fastmcp-rag-timer-frontend` chat klíč dnes není. Je tam jen `MCP_API_TOKEN`. Marek doplní novou sealed proměnnou `LLM_API_KEY` jen na tuhle službu. Do gitu se nezapíše. Redaktor v [src/rag_frontend/redact.py](../src/rag_frontend/redact.py) dostane i tuhle hodnotu. Prohlížeč ji neuvidí.
+Na službě `fastmcp-rag-timer-frontend` chat klíč dnes není. Je tam jen `MCP_API_TOKEN`. Marek doplní novou sealed proměnnou `NOVITA_LLM_API_KEY_GEMMA-3-27` jen na tuhle službu. Do gitu se nezapíše. Redaktor v [src/rag_frontend/redact.py](../src/rag_frontend/redact.py) dostane i tuhle hodnotu. Prohlížeč ji neuvidí.
 
 | Proměnná | Výchozí |
 | --- | --- |
 | `LLM_BASE_URL` | `https://api.novita.ai/openai/v1` |
 | `LLM_MODEL` | `google/gemma-3-27b-it` |
 | `LLM_MODEL_FALLBACK` | `google/gemma-3-12b-it` |
-| `LLM_API_KEY` | sealed, doplní Marek |
+| `NOVITA_LLM_API_KEY_GEMMA-3-27` | sealed, doplní Marek |
 
 `google/gemma-3-27b-it` je serverless, bez reasoning tokenů, a na češtinu stačí. Ceník $0,119 / M vstup a $0,20 / M výstup. Rozpočet jednoho dotazu je asi 1500 tokenů vstupu a 400 výstupu, tedy zhruba $0,00026. Když má 27B výpadek, stejný request jde jednou na `google/gemma-3-12b-it` ($0,05 / $0,10). Druhý model se nezkouší, když první vrátí text. `max_tokens` je 400, `temperature` 0. To pořád je jedno chat volání na dotaz.
 
@@ -97,7 +97,7 @@ Railway env na `fastmcp-rag-timer-frontend`, hodnoty jen v dashboardu:
 | `GOOGLE_ALLOWED_EMAILS` | čárkou oddělené adresy, porovnání bez velikosti písmen |
 | `SESSION_SECRET` | náhodný řetězec, ne prázdný |
 | `PUBLIC_BASE_URL` | `https://fastmcp-rag-timer-frontend-production.up.railway.app` |
-| `LLM_API_KEY` | sealed, nová proměnná, doplní Marek |
+| `NOVITA_LLM_API_KEY_GEMMA-3-27` | sealed, nová proměnná, doplní Marek |
 | `LLM_BASE_URL` | `https://api.novita.ai/openai/v1` |
 | `LLM_MODEL` | `google/gemma-3-27b-it` |
 | `LLM_MODEL_FALLBACK` | `google/gemma-3-12b-it` |
@@ -112,7 +112,7 @@ Měnit:
 | Soubor | Změna |
 | --- | --- |
 | [src/rag_frontend/api/routes.py](../src/rag_frontend/api/routes.py) | `POST /api/answer`. Stávající `/api/search` a katalog nechat pro QA panel. |
-| [src/rag_frontend/config.py](../src/rag_frontend/config.py) | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`, přepínač a limity. Bez klíče syntéza spadne na šablonu. |
+| [src/rag_frontend/config.py](../src/rag_frontend/config.py) | `LLM_BASE_URL`, `LLM_MODEL`, `NOVITA_LLM_API_KEY_GEMMA-3-27`, přepínač a limity. Bez klíče syntéza spadne na šablonu. |
 | [src/rag_frontend/web/index.html](../src/rag_frontend/web/index.html) | Jedna stránka: odpověď, karty, mapa, QA panel. |
 | [src/rag_frontend/web/app.js](../src/rag_frontend/web/app.js) | Vykreslení odpovědi. Žádný MCP ani LLM klíč. |
 | [src/rag_frontend/web/styles.css](../src/rag_frontend/web/styles.css) | Karty a odlišení centroidu. |
@@ -152,7 +152,7 @@ Odpověď 200:
 | `images` | `{image_id, doc_id, caption}` pro proxy. |
 | `debug` | Varianty, latence, počty hitů. Bez tokenu a bez LLM klíče. |
 
-Prázdný dotaz: 400, bez volání ven. Chybí `MCP_API_TOKEN`: 503, bez hodnoty tokenu. Chybí `LLM_API_KEY`: šablona, chat se nevolá.
+Prázdný dotaz: 400, bez volání ven. Chybí `MCP_API_TOKEN`: 503, bez hodnoty tokenu. Chybí `NOVITA_LLM_API_KEY_GEMMA-3-27`: šablona, chat se nevolá.
 
 Obrázky dál přes existující `GET /api/images/{image_id}` (`get_image`). Nová cesta `/api/rag/image/{doc_id}/{image_id}` není potřeba: server hledá `image_id` globálně a proxy token nepřidává do URL.
 
@@ -236,7 +236,7 @@ Bez sítě. MCP klient i LLM klient se nahradí záznamem.
 
 ## otevřené otázky
 
-Model, poskytovatel, jména `LLM_MODEL` / `LLM_BASE_URL` / `LLM_API_KEY`, jedno chat volání a přihlášení jsou rozhodnuté.
+Model, poskytovatel, jména `LLM_MODEL` / `LLM_BASE_URL` / `NOVITA_LLM_API_KEY_GEMMA-3-27`, jedno chat volání a přihlášení jsou rozhodnuté.
 
 1. Kdo dodá slovník aliasů (Wrschowitz, sousední čtvrti) a pro které entity? Prázdný slovník historický název neuhodne.
 2. Když dotaz nejmenuje kraj, podle čeho se homonymum v `obce.json` oddělí od té správné obce? Vršovice bez „Praha 10“ jsou v datech tři.

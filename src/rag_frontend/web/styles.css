@@ -210,6 +210,20 @@ figcaption {
   margin-top: 0.55rem;
 }
 
+#map {
+  height: 16rem;
+  margin-top: 1rem;
+  border: 1px solid var(--line);
+}
+
+#answer {
+  margin-top: 1rem;
+}
+
+.pin-centroid {
+  filter: hue-rotate(40deg);
+}
+
 .doc-row {
   display: flex;
   gap: 0.65rem;

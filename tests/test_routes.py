@@ -95,7 +95,7 @@ def test_catalog_and_page_load() -> None:
             ),
         }
     )
-    http = TestClient(create_app(_settings(), client))
+    http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
     page = http.get("/")
     assert page.status_code == 200
     assert "Ask the datastore" in page.text
@@ -121,7 +121,7 @@ def test_search_includes_picture_hits_by_default() -> None:
             ),
         }
     )
-    http = TestClient(create_app(_settings(), client))
+    http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
     response = http.post("/api/search", json={"query": "chapel", "limit": 3})
     assert response.status_code == 200
     body = response.json()
@@ -135,7 +135,7 @@ def test_search_includes_picture_hits_by_default() -> None:
 def test_search_can_skip_pictures() -> None:
     """Unchecking picture search does not call ``search_images``."""
     client = FakeClient({"search_domain_knowledge": "No relevant facts found."})
-    http = TestClient(create_app(_settings(), client))
+    http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
     response = http.post(
         "/api/search",
         json={"query": "chapel", "include_images": False},
@@ -149,7 +149,7 @@ def test_search_can_skip_pictures() -> None:
 def test_empty_query_does_not_call_mcp() -> None:
     """Blank questions are rejected before any tool call."""
     client = FakeClient({})
-    http = TestClient(create_app(_settings(), client))
+    http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
     response = http.post("/api/search", json={"query": "   "})
     assert response.status_code == 400
     assert client.calls == []
@@ -158,7 +158,7 @@ def test_empty_query_does_not_call_mcp() -> None:
 def test_tool_error_string_is_http_502() -> None:
     """An MCP ``Error`` string does not become a passage."""
     client = FakeClient({"search_domain_knowledge": "Error executing RAG search: down"})
-    http = TestClient(create_app(_settings(), client))
+    http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
     response = http.post("/api/search", json={"query": "chapel"})
     assert response.status_code == 502
     assert "down" in response.json()["detail"]
@@ -171,7 +171,7 @@ def test_picture_search_failure_keeps_text_hits() -> None:
         {"search_domain_knowledge": _hit()},
         fail={"search_images"},
     )
-    http = TestClient(create_app(_settings(), client))
+    http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
     response = http.post("/api/search", json={"query": "chapel"})
     assert response.status_code == 200
     body = response.json()
@@ -182,7 +182,7 @@ def test_picture_search_failure_keeps_text_hits() -> None:
 
 def test_missing_token_refuses_query_routes() -> None:
     """Query routes answer 503 when no bearer token is configured."""
-    http = TestClient(create_app(_settings(token="")))
+    http = TestClient(create_app(_settings(token=""), forced_user="tester@example.com"))
     assert http.get("/api/catalog").status_code == 503
     assert http.get("/").status_code == 200
 
@@ -209,7 +209,7 @@ def test_document_text_images_and_bytes() -> None:
         },
         images={_IMAGE: ImageBytes(_PNG, "image/png", None)},
     )
-    http = TestClient(create_app(_settings(), client))
+    http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
     text = http.get(f"/api/documents/{_DOC}/text")
     images = http.get(f"/api/documents/{_DOC}/images")
     picture = http.get(f"/api/images/{_IMAGE}")
@@ -238,7 +238,13 @@ def test_runtime_token_is_removed_from_text_responses() -> None:
             _IMAGE: ImageBytes(b"\x89PNG" + secret.encode() + b"END", "image/png", None)
         },
     )
-    http = TestClient(create_app(_settings(token=secret), client))
+    http = TestClient(
+        create_app(
+            _settings(token=secret),
+            client,
+            forced_user="tester@example.com",
+        )
+    )
     catalog = http.get("/api/catalog")
     search = http.post(
         "/api/search",
@@ -267,7 +273,7 @@ def test_missing_document_and_oversized_image() -> None:
             )
         },
     )
-    http = TestClient(create_app(_settings(), client))
+    http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
     missing = http.get(f"/api/documents/{_DOC}/text")
     huge = http.get(f"/api/images/{_IMAGE}")
     bad = http.get("/api/documents/not-a-uuid/text")
