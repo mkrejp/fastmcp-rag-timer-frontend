@@ -16,7 +16,7 @@ Web frontend  ->  MCP client  ->  MCP server  ->  upstream
 (this page)       (this process)   /mcp            Qdrant, FastEmbed
 ```
 
-The page is same-origin JSON plus HTML. It never holds `MCP_API_TOKEN` and never calls `/mcp`. The server has no CORS middleware, and picture URLs on that server require the same bearer token, so this app proxies image bytes.
+The page is same-origin JSON plus HTML. It never holds `MCP_API_TOKEN` and never calls `/mcp`. Text responses and logs have that runtime value removed before they leave the process. The server has no CORS middleware, and picture URLs on that server require the same bearer token, so this app proxies image bytes.
 
 ## inventory
 

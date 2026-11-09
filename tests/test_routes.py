@@ -208,6 +208,38 @@ def test_document_text_images_and_bytes() -> None:
     assert picture.headers["content-type"].startswith("image/png")
 
 
+def test_runtime_token_is_removed_from_text_responses() -> None:
+    """A configured bearer token never appears in HTML, JSON, or OpenAPI."""
+    secret = "token-do-not-leak-9f3a"
+    client = FakeClient(
+        {
+            "list_documents": f"Error list_documents: rejected {secret}",
+            "search_domain_knowledge": (
+                "Source: notes.txt (source_type=text_chunk)\n"
+                f"Content: quoted {secret} from the store\n"
+            ),
+        },
+        images={
+            _IMAGE: ImageBytes(b"\x89PNG" + secret.encode() + b"END", "image/png", None)
+        },
+    )
+    http = TestClient(create_app(_settings(token=secret), client))
+    catalog = http.get("/api/catalog")
+    search = http.post(
+        "/api/search",
+        json={"query": "chapel", "include_images": False},
+    )
+    page = http.get("/")
+    script = http.get("/static/app.js")
+    spec = http.get("/openapi.json")
+    picture = http.get(f"/api/images/{_IMAGE}")
+    for response in (catalog, search, page, script, spec):
+        assert secret.encode() not in response.content
+    assert b"[redacted]" in catalog.content
+    assert b"[redacted]" in search.content
+    assert picture.content == b"\x89PNG" + secret.encode() + b"END"
+
+
 def test_missing_document_and_oversized_image() -> None:
     """Missing documents are 404 and oversized pictures explain themselves."""
     client = FakeClient(

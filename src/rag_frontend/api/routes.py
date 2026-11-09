@@ -24,6 +24,7 @@ from rag_frontend.mcp_client.session import (
     McpToolClient,
     MissingTokenError,
 )
+from rag_frontend.redact import RedactTokenMiddleware, install_log_redaction
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 _DOC_ID = re.compile(
@@ -117,9 +118,11 @@ def create_app(
     Query routes refuse to call MCP when ``MCP_API_TOKEN`` is missing. The
     HTML page still loads.
     """
+    install_log_redaction(settings.mcp_api_token)
     app = FastAPI(title="RAG query")
     app.state.settings = settings
     app.state.mcp_client = client if client is not None else _default_client(settings)
+    app.add_middleware(RedactTokenMiddleware, token=settings.mcp_api_token)
 
     @app.get("/api/catalog", response_model=CatalogResponse)
     async def catalog(request: Request) -> CatalogResponse:
