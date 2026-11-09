@@ -282,6 +282,30 @@ def test_missing_document_and_oversized_image() -> None:
     assert bad.status_code == 400
 
 
+def test_static_css_is_public_and_linked() -> None:
+    """Styles load without a session. The API and the page stay behind login."""
+    http = TestClient(create_app(_settings(), FakeClient({})))
+    css = http.get("/static/styles.css", follow_redirects=False)
+    assert css.status_code == 200
+    assert css.headers["content-type"].startswith("text/css")
+    assert "--paper" in css.text
+    assert "--ink" in css.text
+    assert "--accent" in css.text
+    script = http.get("/static/app.js", follow_redirects=False)
+    assert script.status_code == 200
+    assert "javascript" in script.headers["content-type"]
+    page = http.get("/", follow_redirects=False)
+    assert page.status_code == 302
+    assert page.headers["location"] == "/auth/login"
+    signed_in = TestClient(
+        create_app(_settings(), FakeClient({}), forced_user="tester@example.com")
+    )
+    html = signed_in.get("/")
+    assert 'href="/static/styles.css' in html.text
+    denied = http.post("/api/answer", json={"query": "Vršovice"})
+    assert denied.status_code == 401
+
+
 def test_page_image_id_is_proxied_for_a_signed_in_user() -> None:
     """Full-page ids use the same image proxy. Anonymous callers stay out."""
     page_id = f"page:{_DOC}:1"

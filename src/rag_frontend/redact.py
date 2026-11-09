@@ -70,11 +70,12 @@ class RedactTokenMiddleware(BaseHTTPMiddleware):
             for key, value in response.headers.items()
             if key.lower() not in {"content-length", "content-type"}
         }
+        media_type = response.media_type or content_type.split(";", 1)[0].strip()
         return Response(
             content=body,
             status_code=response.status_code,
             headers=headers,
-            media_type=response.media_type,
+            media_type=media_type or None,
         )
 
 
