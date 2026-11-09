@@ -11,7 +11,7 @@ Web dnes ukáže syrové hity. Cíl je stejný postup jako TesterVerifier: rozš
 
 ## overview
 
-Tok zůstává ten z [architecture.md](architecture.md): prohlížeč mluví jen s procesem v tomto repozitáři, ten drží `MCP_API_TOKEN` a volá `https://rag-timer-00001-production.up.railway.app/mcp/`. LLM krok patří do stejného procesu. Klíč modelu do prohlížeče nepatří.
+Tok zůstává ten z [ARCHITECTURE.md](ARCHITECTURE.md): prohlížeč mluví jen s procesem v tomto repozitáři, ten drží `MCP_API_TOKEN` a volá `https://rag-timer-00001-production.up.railway.app/mcp/`. LLM krok patří do stejného procesu. Klíč modelu do prohlížeče nepatří.
 
 ```text
 prohlížeč (jen s Google session)
@@ -116,7 +116,7 @@ Měnit:
 | [src/rag_frontend/web/index.html](../src/rag_frontend/web/index.html) | Jedna stránka: odpověď, karty, mapa, QA panel. |
 | [src/rag_frontend/web/app.js](../src/rag_frontend/web/app.js) | Vykreslení odpovědi. Žádný MCP ani LLM klíč. |
 | [src/rag_frontend/web/styles.css](../src/rag_frontend/web/styles.css) | Karty a odlišení centroidu. |
-| [docs/architecture.md](architecture.md) | Až s implementací, ne v tomto PR. |
+| [docs/ARCHITECTURE.md](ARCHITECTURE.md) | Až s implementací, ne v tomto PR. |
 
 Vytvořit:
 
