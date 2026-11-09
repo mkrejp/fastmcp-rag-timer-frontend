@@ -95,7 +95,9 @@ class LoginRequiredMiddleware(BaseHTTPMiddleware):
             return RedirectResponse("/auth/login", status_code=302)
         email = str(user.get("email") or "").lower()
         allowlist = request.app.state.allowed_emails
-        if allowlist and email not in allowlist and email != forced:
+        if forced and email == forced:
+            return await call_next(request)  # type: ignore[operator]
+        if email not in allowlist:
             return JSONResponse(
                 {"detail": "This email is not allowed."},
                 status_code=403,
