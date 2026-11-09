@@ -51,7 +51,7 @@ Ingest, delete, and locality-admin tools are not called.
 2. The transcript lists text passages and, when the picture checkbox is on, picture hits.
 3. A hit with an image id loads `/api/images/{image_id}`.
 4. Open document loads full text and the pictures stored for that document.
-5. The catalog lists filename, id, time, chunk count, status, and mime. Hashes and disk paths stay on the server.
+5. The catalog lists filename, id, time, chunk count, status, and mime. Each row shows the document's first stored picture when it has one. Hashes and disk paths stay on the server.
 
 ## references
 

@@ -210,6 +210,19 @@ figcaption {
   margin-top: 0.55rem;
 }
 
+.doc-row {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+}
+
+.thumb {
+  width: 4.5rem;
+  height: 3.2rem;
+  margin-top: 0;
+  object-fit: cover;
+}
+
 @media (max-width: 800px) {
   main {
     grid-template-columns: 1fr;

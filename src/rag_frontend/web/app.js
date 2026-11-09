@@ -110,18 +110,26 @@ function renderPassage(passage) {
 
 function renderDocument(documentRow) {
   const item = document.createElement("li");
+  item.className = "doc-row";
   const name = documentRow.filename || documentRow.doc_id || "Document";
+  if (documentRow.thumbnail_image_id) {
+    item.append(
+      imageSlot(documentRow.thumbnail_image_id, name, "shot thumb"),
+    );
+  }
+  const text = document.createElement("div");
   const bits = [documentRow.status, documentRow.uploaded_at].filter(Boolean);
   if (documentRow.chunk_count != null) {
     bits.push(`${documentRow.chunk_count} chunks`);
   }
-  item.append(paragraph(name, "content"));
+  text.append(paragraph(name, "content"));
   if (bits.length) {
-    item.append(meta(bits.join(" · ")));
+    text.append(meta(bits.join(" · ")));
   }
   if (documentRow.doc_id) {
-    item.append(openButton(documentRow.doc_id, name));
+    text.append(openButton(documentRow.doc_id, name));
   }
+  item.append(text);
   return item;
 }
 
@@ -190,10 +198,10 @@ async function renderGallery(images, message) {
   return wrap;
 }
 
-function imageSlot(imageId, alt) {
+function imageSlot(imageId, alt, className) {
   const frame = document.createElement("div");
   const img = document.createElement("img");
-  img.className = "shot";
+  img.className = className || "shot";
   img.alt = alt;
   frame.append(img);
   void loadImage(imageId).then((result) => {

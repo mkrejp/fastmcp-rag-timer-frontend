@@ -79,7 +79,20 @@ def test_catalog_and_page_load() -> None:
                         "status": "ready",
                     }
                 ]
-            )
+            ),
+            "get_document_images": json.dumps(
+                [
+                    {
+                        "image_id": _IMAGE,
+                        "page_number": 1,
+                        "width": 40,
+                        "height": 30,
+                        "mime": "image/png",
+                        "sha256": "hide",
+                        "file_path": "/secret.png",
+                    }
+                ]
+            ),
         }
     )
     http = TestClient(create_app(_settings(), client))
@@ -90,8 +103,10 @@ def test_catalog_and_page_load() -> None:
     assert catalog.status_code == 200
     row = catalog.json()["documents"][0]
     assert row["filename"] == "notes.txt"
+    assert row["thumbnail_image_id"] == _IMAGE
     assert "sha256" not in row
-    assert client.calls[0][0] == "list_documents"
+    names = [name for name, _arguments in client.calls]
+    assert names == ["list_documents", "get_document_images"]
 
 
 def test_search_includes_picture_hits_by_default() -> None:
