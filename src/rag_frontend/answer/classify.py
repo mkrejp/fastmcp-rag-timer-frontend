@@ -11,15 +11,13 @@ def classify_facts(
     facts: list[Fact],
     *,
     entity: re.Pattern[str],
-    prague: bool,
+    region_prefixes: tuple[str, ...] = (),
 ) -> tuple[list[Fact], list[Fact], bool]:
     """Split facts and note when the first search hit lacks the entity.
 
-    Homonym default: a Prague-scoped query (Praha, secese, tenement, architect,
-    Wrschowitz) keeps municipality ids with prefix ``CZ010`` only. Any other
-    prefix is another village. If the query names no region, every
-    ``obce.json`` hit is a homonym with the note ``kraj není v dotazu``, so
-    the page does not pretend one of the three Vršovice is the right one.
+    ``obce.json`` rows match only an explicit kraj prefix from the query.
+    With no prefix, every such row is a homonym and the answer says the
+    region was not named.
     """
     mark_centroids(facts)
     ranking_error = False
@@ -28,7 +26,9 @@ def classify_facts(
     for index, fact in enumerate(facts):
         blob = "\n".join((fact.title, fact.address, fact.text, fact.note))
         if fact.kind == "obec":
-            _label_obec(fact, prague)
+            _label_obec(fact, region_prefixes)
+        elif fact.note in {"jen vektorová podobnost", "0 shod"}:
+            fact.label = "noise"
         elif entity.search(blob) is None:
             fact.label = "noise"
             if index == 0:
@@ -45,14 +45,12 @@ def classify_facts(
     return relevant[:5], noise, ranking_error
 
 
-def _label_obec(fact: Fact, prague: bool) -> None:
-    """Apply the municipality homonym default."""
+def _label_obec(fact: Fact, prefixes: tuple[str, ...]) -> None:
+    """Apply the municipality homonym rule for every Czech kraj prefix."""
     obec_id = fact.obec_id.upper()
-    if prague and obec_id.startswith("CZ010"):
+    if prefixes and any(obec_id.startswith(prefix) for prefix in prefixes):
         fact.label = "relevant"
+        fact.note = ""
         return
     fact.label = "homonym"
-    if not prague:
-        fact.note = "kraj není v dotazu"
-    elif not obec_id.startswith("CZ010"):
-        fact.note = "jiná obec stejného jména"
+    fact.note = "kraj není v dotazu" if not prefixes else "jiná obec stejného jména"

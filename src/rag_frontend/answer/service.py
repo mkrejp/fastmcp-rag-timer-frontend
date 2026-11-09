@@ -7,16 +7,64 @@ from typing import Any
 
 from rag_frontend.answer.cache import BudgetDecision, TokenBudget, TtlCache
 from rag_frontend.answer.classify import classify_facts
-from rag_frontend.answer.expand import entity_pattern, expand_query, prague_scoped
+from rag_frontend.answer.expand import entity_pattern, expand_query, region_prefixes
 from rag_frontend.answer.prompt import template_answer, user_payload
 from rag_frontend.answer.retrieve import bind_cache, retrieve
 from rag_frontend.answer.synthesize import LlmClient, estimate_usd
 from rag_frontend.answer.trace import Trace
 from rag_frontend.config import Settings
+from rag_frontend.mcp_client.parse import parse_images, parse_search
 from rag_frontend.mcp_client.session import McpToolClient
 
 _ANSWERS = TtlCache(600)
 _BUDGET = TokenBudget()
+
+
+async def _attach_images(
+    client: McpToolClient,
+    query: str,
+    relevant: list[Any],
+    trace: Trace,
+) -> None:
+    """Add picture ids from image search and each relevant document."""
+    started = time.perf_counter()
+    text = await client.call_tool(
+        "search_images",
+        {"query": query, "limit": 5, "hybrid": False},
+    )
+    view = parse_search(text)
+    by_doc = {fact.doc_id: fact for fact in relevant if fact.doc_id}
+    picture_hits = 0
+    for passage in view.passages:
+        if not passage.image_id:
+            continue
+        picture_hits += 1
+        fact = by_doc.get(passage.doc_id or "")
+        if fact is not None and passage.image_id not in fact.image_ids:
+            fact.image_ids.append(passage.image_id)
+    await trace.event(
+        "mcp",
+        tool="search_images",
+        arguments={"query": query, "limit": 5},
+        hits=picture_hits,
+        duration_ms=round((time.perf_counter() - started) * 1000, 1),
+    )
+    for fact in relevant:
+        if not fact.doc_id:
+            continue
+        one = time.perf_counter()
+        raw = await client.call_tool("get_document_images", {"doc_id": fact.doc_id})
+        parsed = parse_images(raw)
+        for image in parsed.images:
+            if image.image_id not in fact.image_ids:
+                fact.image_ids.append(image.image_id)
+        await trace.event(
+            "mcp",
+            tool="get_document_images",
+            arguments={"doc_id": fact.doc_id},
+            hits=len(parsed.images),
+            duration_ms=round((time.perf_counter() - one) * 1000, 1),
+        )
 
 
 def configure_answer_cache(ttl_seconds: int) -> None:
@@ -44,8 +92,9 @@ async def answer_query(
     relevant, noise, ranking_error = classify_facts(
         facts,
         entity=entity_pattern(query),
-        prague=prague_scoped(query),
+        region_prefixes=region_prefixes(query),
     )
+    await _attach_images(client, query, relevant, log)
     if ranking_error and noise:
         noise[0].note = noise[0].note or "chyba řazení"
     reasons: dict[str, int] = {}
