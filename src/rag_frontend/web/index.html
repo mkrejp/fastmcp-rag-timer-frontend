@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="cs">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RAG query</title>
+    <title>RAG odpověď</title>
     <link rel="stylesheet" href="/static/styles.css" />
     <link
       rel="stylesheet"
@@ -14,51 +14,39 @@
     <header class="top">
       <div class="title">
         <p class="eyebrow">fastmcp-rag-timer</p>
-        <h1>Ask the datastore</h1>
+        <h1>Co o tom ví server</h1>
       </div>
       <form id="query-form">
-        <label for="query">Question</label>
+        <label for="query">Dotaz</label>
         <textarea
           id="query"
           name="query"
           rows="3"
           required
-          placeholder="What is stored about this place?"
+          placeholder="co ví server o lokalitě Vršovice a secesi zde"
         ></textarea>
         <div class="form-row">
-          <label class="limit" for="limit">
-            Results
-            <input id="limit" name="limit" type="number" min="1" max="20" value="3" />
-          </label>
-          <label class="check" for="include-images">
-            <input id="include-images" name="include_images" type="checkbox" checked />
-            Also search stored pictures
-          </label>
-          <label class="check" for="use-llm">
-            <input id="use-llm" name="use_llm" type="checkbox" checked />
-            Složit odpověď modelem
-          </label>
-          <button type="submit">Search</button>
+          <button type="submit">Odpovědět</button>
         </div>
       </form>
       <p id="status" role="status"></p>
     </header>
-    <main>
-      <section class="conversation" aria-labelledby="conversation-heading">
-        <h2 id="conversation-heading">Conversation</h2>
-        <ol id="transcript"></ol>
-        <article id="answer" hidden></article>
-        <div id="map" hidden></div>
-        <details id="qa">
-          <summary>Debug / QA</summary>
-          <pre id="qa-body"></pre>
-        </details>
+    <main class="answer-layout">
+      <article id="answer" hidden></article>
+      <p id="answer-note" class="quiet" hidden></p>
+      <div id="figures"></div>
+      <div id="map" hidden></div>
+      <details id="sources">
+        <summary>Zdroje</summary>
+        <div id="sources-body"></div>
+      </details>
+      <section class="trace-panel" aria-label="Průběh dotazu">
+        <div class="trace-bar">
+          <h2>Průběh</h2>
+          <button id="copy-trace" type="button">Kopírovat</button>
+        </div>
+        <pre id="trace"></pre>
       </section>
-      <aside class="catalog" aria-labelledby="catalog-heading">
-        <h2 id="catalog-heading">Documents</h2>
-        <p id="catalog-note"></p>
-        <ul id="catalog"></ul>
-      </aside>
     </main>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="/static/app.js"></script>
