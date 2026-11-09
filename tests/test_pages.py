@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -134,9 +135,9 @@ def test_missing_tool_is_remembered() -> None:
 
 
 def test_old_server_answer_does_not_call_page_tools() -> None:
-    """Without page_image_id the answer skips highlight tools."""
+    """A text hit without page_image_id stays a text row."""
     configure_answer_cache(600)
-    client = FakeClient(_tools(page_image=False))
+    client = FakeClient(_tools(page_image=False, pdf=False))
     http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
     response = http.post("/api/answer", json={"query": "Vršovice", "use_llm": False})
     assert response.status_code == 200
@@ -145,6 +146,26 @@ def test_old_server_answer_does_not_call_page_tools() -> None:
     assert body["objects"][0]["highlights"] == []
     assert "get_page_highlights" not in {name for name, _args in client.calls}
     assert "get_page_image" not in {name for name, _args in client.calls}
+
+
+def test_pdf_without_page_image_token_uses_zero_based_page() -> None:
+    """A PDF hit with only page_number=0 still previews page 1."""
+    configure_answer_cache(600)
+    client = FakeClient(_tools(page_image=False, pdf=True))
+    http = TestClient(
+        create_app(_settings(), client, forced_user="tester@example.com")
+    )
+    response = http.post(
+        "/api/answer",
+        json={"query": "Vršovice fallback", "use_llm": False},
+    )
+    assert response.status_code == 200
+    source = response.json()["objects"][0]
+    assert source["page_image_id"] == _PAGE
+    assert source["page_one"] == 1
+    assert source["page"] == "0"
+    calls = [args for name, args in client.calls if name == "get_page_highlights"]
+    assert calls[0]["page"] == 1
 
 
 def test_new_server_answer_attaches_highlights_for_page_one() -> None:
@@ -180,12 +201,76 @@ def test_new_server_answer_attaches_highlights_for_page_one() -> None:
     assert "mcp-secret" not in joined
 
 
-def _tools(*, page_image: bool) -> dict[str, str]:
-    """Catalog and one PDF hit, with or without the new page field."""
-    header = (
-        "Source: report.pdf (source_type=pdf_chunk) "
-        f"doc_id={_DOC} page_number=0"
+def test_stream_emits_the_tool_before_it_returns() -> None:
+    """The first SSE frame is immediate, and the end line waits for the call."""
+    configure_answer_cache(600)
+
+    class Slow(FakeClient):
+        async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
+            self.calls.append((name, arguments))
+            if name == "search_domain_knowledge":
+                await asyncio.sleep(0.35)
+            body = self.tools.get(name, "[]")
+            if isinstance(body, dict):
+                return str(body.get(str(arguments.get("doc_id") or ""), "[]"))
+            return body
+
+    client = Slow(_tools(page_image=False, pdf=False))
+    http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
+    started = time.perf_counter()
+    seen: list[tuple[float, str, str, str]] = []
+    with http.stream(
+        "POST",
+        "/api/answer/stream",
+        json={"query": "Vršovice", "use_llm": False},
+    ) as response:
+        assert response.status_code == 200
+        assert response.headers["x-accel-buffering"] == "no"
+        assert "no-cache" in response.headers["cache-control"]
+        for line in response.iter_lines():
+            if not line.startswith("data: "):
+                continue
+            event = json.loads(line[6:])
+            seen.append(
+                (
+                    time.perf_counter() - started,
+                    str(event.get("step") or ""),
+                    str(event.get("phase") or ""),
+                    str(event.get("tool") or ""),
+                )
+            )
+            if event.get("step") == "mcp" and event.get("phase") == "end":
+                if event.get("tool") == "search_domain_knowledge":
+                    break
+    assert seen[0][0] < 0.2
+    assert seen[0][1] == "status"
+    search_start = next(
+        item
+        for item in seen
+        if item[1:] == ("mcp", "start", "search_domain_knowledge")
     )
+    search_end = next(
+        item
+        for item in seen
+        if item[1:] == ("mcp", "end", "search_domain_knowledge")
+    )
+    assert search_start[0] < search_end[0]
+    assert search_end[0] - search_start[0] >= 0.25
+
+
+def _tools(*, page_image: bool, pdf: bool = True) -> dict[str, str]:
+    """Catalog and one hit, with or without the page image field."""
+    if pdf:
+        header = (
+            "Source: report.pdf (source_type=pdf_chunk) "
+            f"doc_id={_DOC} page_number=0"
+        )
+        filename = "report.pdf"
+        mime = "application/pdf"
+    else:
+        header = f"Source: hints.txt (source_type=text_chunk) doc_id={_DOC}"
+        filename = "hints.txt"
+        mime = "text/plain"
     if page_image:
         header += f" page_image_id={_PAGE}"
     search = f"{header}\nContent: Vršovice na stránce\n"
@@ -194,8 +279,8 @@ def _tools(*, page_image: bool) -> dict[str, str]:
             [
                 {
                     "doc_id": _DOC,
-                    "filename": "report.pdf",
-                    "mime": "application/pdf",
+                    "filename": filename,
+                    "mime": mime,
                     "uploaded_at": "2020-01-01",
                     "chunk_count": 2,
                     "status": "ready",

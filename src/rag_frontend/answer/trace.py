@@ -6,6 +6,8 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from rag_frontend.mcp_client.session import McpToolClient
+
 _DROP = {"authorization", "cookie", "api_key", "token", "secret", "password", "prompt"}
 _Hook = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -29,6 +31,46 @@ class Trace:
         self.events.append(item)
         if self._hook is not None:
             await self._hook(dict(item))
+
+
+async def traced_mcp(
+    client: McpToolClient,
+    trace: Trace,
+    name: str,
+    arguments: dict[str, Any],
+    measure: Callable[[str], int] | None = None,
+) -> str:
+    """Log a tool call before it starts and again when it returns.
+
+    The start line is emitted before ``call_tool`` awaits, so a live stream
+    can show the request while the server is still working.
+    """
+    await trace.event("mcp", phase="start", tool=name, arguments=arguments)
+    started = time.perf_counter()
+    try:
+        text = await client.call_tool(name, arguments)
+    except Exception as exc:
+        await trace.event(
+            "mcp",
+            phase="end",
+            tool=name,
+            hits=0,
+            error=type(exc).__name__,
+            duration_ms=round((time.perf_counter() - started) * 1000, 1),
+        )
+        raise
+    failed = text.startswith("Error ") or text.startswith("Document not found")
+    hits = 0 if failed or measure is None else measure(text)
+    detail: dict[str, Any] = {
+        "phase": "end",
+        "tool": name,
+        "hits": hits,
+        "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+    }
+    if failed:
+        detail["error"] = True
+    await trace.event("mcp", **detail)
+    return text
 
 
 def _clean(detail: dict[str, Any]) -> dict[str, Any]:

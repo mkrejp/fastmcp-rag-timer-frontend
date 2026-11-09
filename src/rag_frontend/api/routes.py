@@ -281,15 +281,26 @@ def create_app(
                     await queue.put({"step": "error", "error": type(exc).__name__})
                 await queue.put(None)
 
+            # Padding plus the first event leave before any MCP call starts.
+            yield ":" + (" " * 2048) + "\n\n" + _sse(
+                {"step": "status", "phase": "start", "t_ms": 0}
+            )
             task = asyncio.create_task(run())
             while True:
                 item = await queue.get()
                 if item is None:
                     break
-                yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+                yield _sse(item)
             await task
 
-        return StreamingResponse(events(), media_type="text/event-stream")
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.get("/")
     async def index() -> Response:
@@ -309,6 +320,11 @@ class AnswerRequest(BaseModel):
 
     query: str
     use_llm: bool = True
+
+
+def _sse(item: dict[str, object]) -> str:
+    """One Server-Sent Event. The blank line flushes a frame."""
+    return f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
 
 
 def _default_client(settings: Settings) -> HttpMcpClient | None:

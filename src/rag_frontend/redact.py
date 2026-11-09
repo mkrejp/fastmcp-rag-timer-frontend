@@ -58,6 +58,8 @@ class RedactTokenMiddleware(BaseHTTPMiddleware):
             return response
         media_type = response.media_type or ""
         content_type = response.headers.get("content-type", media_type)
+        if content_type.lower().startswith("text/event-stream"):
+            return response
         if not _is_text(content_type):
             return response
         body = b""

@@ -302,6 +302,9 @@ def test_static_css_is_public_and_linked() -> None:
     )
     html = signed_in.get("/")
     assert 'href="/static/styles.css' in html.text
+    assert "Připraveno" in html.text
+    assert html.text.index("Připraveno") < html.text.index('id="answer"')
+    assert ".trace-line.mcp" in css.text
     denied = http.post("/api/answer", json={"query": "Vršovice"})
     assert denied.status_code == 401
 
