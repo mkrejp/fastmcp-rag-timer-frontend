@@ -12,6 +12,8 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from rag_frontend.answer.service import answer_query, configure_answer_cache
+from rag_frontend.auth import install_auth
 from rag_frontend.config import Settings
 from rag_frontend.mcp_client.parse import (
     parse_catalog,
@@ -114,17 +116,21 @@ class DocumentTextResponse(BaseModel):
 def create_app(
     settings: Settings,
     client: McpToolClient | None = None,
+    forced_user: str | None = None,
 ) -> FastAPI:
     """Build the query app.
 
-    Query routes refuse to call MCP when ``MCP_API_TOKEN`` is missing. The
-    HTML page still loads.
+    Query routes refuse to call MCP when ``MCP_API_TOKEN`` is missing.
+    Anonymous callers are stopped before that. ``forced_user`` is tests only.
     """
     install_log_redaction(settings.mcp_api_token)
+    install_log_redaction(settings.llm_api_key)
+    configure_answer_cache(settings.cache_ttl_seconds)
     app = FastAPI(title="RAG query")
     app.state.settings = settings
     app.state.mcp_client = client if client is not None else _default_client(settings)
     app.add_middleware(RedactTokenMiddleware, token=settings.mcp_api_token)
+    app.add_middleware(RedactTokenMiddleware, token=settings.llm_api_key)
 
     @app.get("/api/catalog", response_model=CatalogResponse)
     async def catalog(request: Request) -> CatalogResponse:
@@ -217,6 +223,28 @@ def create_app(
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return _image_response(payload)
 
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        """Liveness for Railway. No session, no secrets."""
+        return {"status": "ok"}
+
+    @app.post("/api/answer")
+    async def answer(body: AnswerRequest, request: Request) -> dict[str, object]:
+        """Czech answer. At most one Novita call, and none without relevant hits."""
+        query = body.query.strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="Enter a question.")
+        tool_client = _require_client(request)
+        user = request.session.get("user") or {}
+        email = str(user.get("email") or forced_user or "")
+        return await answer_query(
+            tool_client,
+            settings,
+            query,
+            email=email,
+            use_llm=body.use_llm,
+        )
+
     @app.get("/")
     async def index() -> Response:
         """Serve the one-page query UI."""
@@ -226,7 +254,15 @@ def create_app(
         )
 
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+    install_auth(app, settings, forced_user)
     return app
+
+
+class AnswerRequest(BaseModel):
+    """Body for ``POST /api/answer``."""
+
+    query: str
+    use_llm: bool = True
 
 
 def _default_client(settings: Settings) -> HttpMcpClient | None:

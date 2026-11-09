@@ -22,30 +22,34 @@ async function submitQuery() {
     return;
   }
   appendQuestion(query);
-  const response = await fetch("/api/search", {
+  const response = await fetch("/api/answer", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       query,
-      limit: Number(limitInput.value || 3),
-      include_images: imagesInput.checked,
+      use_llm: document.querySelector("#use-llm").checked,
     }),
   });
   const body = await readJson(response);
+  if (response.status === 401) {
+    window.location.href = "/auth/login";
+    return;
+  }
   if (!response.ok) {
     setStatus(body.detail || "Search failed.");
     return;
   }
-  appendAnswer(body);
-  if (body.image_message && body.image_message.startsWith("Error")) {
-    setStatus(body.image_message);
-  }
+  renderStructuredAnswer(body);
 }
 
 async function loadCatalog() {
   const response = await fetch("/api/catalog");
   const body = await readJson(response);
   catalog.replaceChildren();
+  if (response.status === 401) {
+    window.location.href = "/auth/login";
+    return;
+  }
   if (!response.ok) {
     catalogNote.textContent = body.detail || "Catalog unavailable.";
     return;
@@ -247,6 +251,55 @@ function paragraph(text, className) {
 
 function setStatus(text) {
   statusLine.textContent = text;
+}
+
+function renderStructuredAnswer(body) {
+  const box = document.querySelector("#answer");
+  const qa = document.querySelector("#qa-body");
+  box.hidden = false;
+  box.replaceChildren();
+  box.append(paragraph(body.answer_markdown || "", "content"));
+  for (const item of body.objects || []) {
+    const card = document.createElement("article");
+    card.className = "passage";
+    const gps = item.gps ? `GPS ${item.gps.join(", ")} (${item.gps_kind || "bod"})` : "";
+    card.append(paragraph(item.title || item.filename || "Záznam", "content"));
+    card.append(meta([item.address, item.filename, gps].filter(Boolean).join(" · ")));
+    for (const imageId of item.image_ids || []) {
+      card.append(imageSlot(imageId, item.title || "Obrázek"));
+    }
+    box.append(card);
+  }
+  drawMap(body.objects || []);
+  const debug = body.debug || {};
+  qa.textContent = [
+    `varianty: ${(debug.variants || []).join(" | ")}`,
+    `llm: ${debug.llm_called ? debug.model : "ne"}`,
+    `tokeny: ${debug.prompt_tokens || 0} in / ${debug.completion_tokens || 0} out`,
+    `důvod: ${debug.reason || ""}`,
+    `latence: ${JSON.stringify(debug.timings_ms || {})}`,
+  ].join("\n");
+}
+
+function drawMap(objects) {
+  const mapNode = document.querySelector("#map");
+  const points = objects.filter((item) => Array.isArray(item.gps));
+  if (!points.length || typeof L === "undefined") {
+    mapNode.hidden = true;
+    return;
+  }
+  mapNode.hidden = false;
+  if (mapNode._map) {
+    mapNode._map.remove();
+  }
+  const map = L.map(mapNode).setView(points[0].gps, 12);
+  mapNode._map = map;
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap",
+  }).addTo(map);
+  for (const item of points) {
+    L.marker(item.gps).addTo(map).bindPopup(item.title || item.filename || "");
+  }
 }
 
 async function readJson(response) {

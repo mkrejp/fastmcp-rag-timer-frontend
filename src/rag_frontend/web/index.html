@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG query</title>
     <link rel="stylesheet" href="/static/styles.css" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
   </head>
   <body>
     <header class="top">
@@ -30,6 +34,10 @@
             <input id="include-images" name="include_images" type="checkbox" checked />
             Also search stored pictures
           </label>
+          <label class="check" for="use-llm">
+            <input id="use-llm" name="use_llm" type="checkbox" checked />
+            Složit odpověď modelem
+          </label>
           <button type="submit">Search</button>
         </div>
       </form>
@@ -39,6 +47,12 @@
       <section class="conversation" aria-labelledby="conversation-heading">
         <h2 id="conversation-heading">Conversation</h2>
         <ol id="transcript"></ol>
+        <article id="answer" hidden></article>
+        <div id="map" hidden></div>
+        <details id="qa">
+          <summary>Debug / QA</summary>
+          <pre id="qa-body"></pre>
+        </details>
       </section>
       <aside class="catalog" aria-labelledby="catalog-heading">
         <h2 id="catalog-heading">Documents</h2>
@@ -46,6 +60,7 @@
         <ul id="catalog"></ul>
       </aside>
     </main>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>
