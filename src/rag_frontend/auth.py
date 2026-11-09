@@ -1,4 +1,4 @@
-"""Google sign-in. Every page and API route except health and /auth requires it."""
+"""Google sign-in. Pages and API routes require it. Static files do not."""
 
 from __future__ import annotations
 
@@ -81,9 +81,9 @@ class LoginRequiredMiddleware(BaseHTTPMiddleware):
     """Reject anonymous callers before a route can call MCP or Novita."""
 
     async def dispatch(self, request: Request, call_next: object) -> Response:
-        """Allow health and auth routes. Everything else needs a session."""
+        """Allow health, auth, and /static. API routes and the page need a session."""
         path = request.url.path
-        if path in _PUBLIC:
+        if path in _PUBLIC or _is_static(path):
             return await call_next(request)  # type: ignore[operator]
         forced = getattr(request.app.state, "forced_user", None)
         if forced:
@@ -103,3 +103,12 @@ class LoginRequiredMiddleware(BaseHTTPMiddleware):
                 status_code=403,
             )
         return await call_next(request)  # type: ignore[operator]
+
+
+def _is_static(path: str) -> bool:
+    """Return whether ``path`` is a stylesheet, script, or icon under /static.
+
+    Those files carry no datastore rows. Keeping them behind the login wall
+    makes the browser follow a redirect instead of loading the colors.
+    """
+    return path == "/static" or path.startswith("/static/")

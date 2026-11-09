@@ -20,6 +20,14 @@ SYSTEM_PROMPT = (
 )
 
 
+def _for_model(item: Fact) -> dict[str, object]:
+    """Fact fields for synthesis. Page thumbnails and boxes stay out."""
+    data = item.to_dict()
+    for key in ("page_image_id", "page_one", "highlights"):
+        data.pop(key, None)
+    return data
+
+
 def user_payload(
     query: str,
     variants: list[str],
@@ -31,7 +39,7 @@ def user_payload(
         {
             "query": query,
             "variants": variants,
-            "objects": [item.to_dict() for item in relevant[:5]],
+            "objects": [_for_model(item) for item in relevant[:5]],
             "images": [
                 {"image_id": image_id, "caption": item.title[:120]}
                 for item in relevant[:5]

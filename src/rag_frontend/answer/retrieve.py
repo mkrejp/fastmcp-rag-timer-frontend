@@ -267,15 +267,17 @@ def _facts_from_search(text: str) -> list[Fact]:
     view = parse_search(text)
     facts: list[Fact] = []
     for passage in view.passages:
-        facts.extend(
-            facts_from_passage(
-                filename=passage.source,
-                doc_id=passage.doc_id or "",
-                page=passage.page_number,
-                image_id=passage.image_id,
-                content=passage.content,
-            )
+        built = facts_from_passage(
+            filename=passage.source,
+            doc_id=passage.doc_id or "",
+            page=passage.page_number,
+            image_id=passage.image_id,
+            content=passage.content,
         )
+        for fact in built:
+            if passage.page_image_id:
+                fact.page_image_id = passage.page_image_id
+        facts.extend(built)
     return facts
 
 

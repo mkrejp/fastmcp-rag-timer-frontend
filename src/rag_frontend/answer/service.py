@@ -8,6 +8,8 @@ from typing import Any
 from rag_frontend.answer.cache import BudgetDecision, TokenBudget, TtlCache
 from rag_frontend.answer.classify import classify_facts
 from rag_frontend.answer.expand import entity_pattern, expand_query, region_prefixes
+from rag_frontend.answer.pages import attach_page_previews
+from rag_frontend.answer.pages import bind_cache as bind_page_cache
 from rag_frontend.answer.prompt import template_answer, user_payload
 from rag_frontend.answer.retrieve import bind_cache, retrieve
 from rag_frontend.answer.synthesize import LlmClient, estimate_usd
@@ -72,6 +74,7 @@ def configure_answer_cache(ttl_seconds: int) -> None:
     global _ANSWERS
     _ANSWERS = TtlCache(ttl_seconds)
     bind_cache(ttl_seconds)
+    bind_page_cache(ttl_seconds)
 
 
 async def answer_query(
@@ -95,6 +98,10 @@ async def answer_query(
         region_prefixes=region_prefixes(query),
     )
     await _attach_images(client, query, relevant, log)
+    await attach_page_previews(client, query, relevant, log)
+    for fact in noise:
+        fact.page_image_id = ""
+        fact.highlights = []
     if ranking_error and noise:
         noise[0].note = noise[0].note or "chyba řazení"
     reasons: dict[str, int] = {}

@@ -10,7 +10,9 @@ from typing import Any
 _HEADER = re.compile(
     r"^Source: (?P<source>.*) \(source_type=(?P<source_type>[^)]+)\)(?P<rest>.*)$"
 )
-_TOKEN = re.compile(r"(doc_id|page_number|image_id|url)=(\S+)")
+_TOKEN = re.compile(
+    r"(page_image_id|page_url|doc_id|page_number|image_id|url)=(\S+)"
+)
 _NO_FACTS = "No relevant facts found."
 _NO_IMAGES = "No relevant images found."
 _NO_DOCUMENTS = "No documents stored."
@@ -36,6 +38,7 @@ class Passage:
     page_number: str | None = None
     image_id: str | None = None
     url: str | None = None
+    page_image_id: str | None = None
 
     def to_dict(self) -> dict[str, str | None]:
         """Serialize the passage for the JSON API."""
@@ -47,6 +50,7 @@ class Passage:
             "page_number": self.page_number,
             "image_id": self.image_id,
             "url": self.url,
+            "page_image_id": self.page_image_id,
         }
 
 
@@ -193,6 +197,7 @@ def _parse_block(block: str) -> Passage | None:
         page_number=fields.get("page_number"),
         image_id=fields.get("image_id"),
         url=fields.get("url"),
+        page_image_id=fields.get("page_image_id"),
     )
 
 

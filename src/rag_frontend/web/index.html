@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG odpověď</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=2" />
     <link
       rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -40,6 +40,18 @@
         <summary>Zdroje</summary>
         <div id="sources-body"></div>
       </details>
+      <dialog id="page-lightbox">
+        <form method="dialog">
+          <button type="submit">Zavřít</button>
+        </form>
+        <figure>
+          <div class="page-frame lightbox-frame">
+            <img id="lightbox-image" alt="" />
+            <span id="lightbox-marks" class="page-highlights"></span>
+          </div>
+          <figcaption id="lightbox-caption"></figcaption>
+        </figure>
+      </dialog>
       <section class="trace-panel" aria-label="Průběh dotazu">
         <div class="trace-bar">
           <h2>Průběh</h2>
@@ -49,6 +61,6 @@
       </section>
     </main>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=2"></script>
   </body>
 </html>
