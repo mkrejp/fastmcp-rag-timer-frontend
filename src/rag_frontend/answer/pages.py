@@ -9,7 +9,7 @@ from typing import Any
 
 from rag_frontend.answer.cache import TtlCache
 from rag_frontend.answer.parsers import Fact
-from rag_frontend.answer.trace import Trace
+from rag_frontend.answer.trace import Trace, traced_mcp
 from rag_frontend.mcp_client.session import McpCallError, McpToolClient
 
 _PAGE_ID = re.compile(
@@ -203,9 +203,12 @@ async def _highlights(
         return False
     started = time.perf_counter()
     try:
-        text = await client.call_tool(
+        text = await traced_mcp(
+            client,
+            trace,
             "get_page_highlights",
             {"doc_id": doc_id, "page": page, "query": query},
+            measure=lambda body: len(parse_highlights(body)),
         )
     except (McpCallError, TimeoutError, OSError) as exc:
         await trace.event(

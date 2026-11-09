@@ -10,8 +10,9 @@ from typing import Any
 
 from rag_frontend.answer.cache import TtlCache
 from rag_frontend.answer.expand import entity_pattern
+from rag_frontend.answer.pages import page_image_id_from_zero_based, parse_page_image_id
 from rag_frontend.answer.parsers import Fact, facts_from_passage, parse_building_hints
-from rag_frontend.answer.trace import Trace
+from rag_frontend.answer.trace import Trace, traced_mcp
 from rag_frontend.mcp_client.parse import parse_catalog, parse_search
 from rag_frontend.mcp_client.session import McpToolClient
 
@@ -42,20 +43,14 @@ async def retrieve(
 
     async def _one(variant: str) -> list[Fact]:
         async with semaphore:
-            call_started = time.perf_counter()
-            text = await client.call_tool(
+            text = await traced_mcp(
+                client,
+                trace,
                 "search_domain_knowledge",
                 {"query": variant, "limit": 8},
+                measure=lambda body: len(_facts_from_search(body)),
             )
-        facts = _facts_from_search(text)
-        await trace.event(
-            "mcp",
-            tool="search_domain_knowledge",
-            arguments={"query": variant, "limit": 8},
-            hits=len(facts),
-            duration_ms=round((time.perf_counter() - call_started) * 1000, 1),
-        )
-        return facts
+        return _facts_from_search(text)
 
     search_started = time.perf_counter()
     batches = await asyncio.gather(*[_one(variant) for variant in variants])
@@ -84,18 +79,15 @@ async def _catalog(client: McpToolClient, trace: Trace) -> list[dict[str, Any]]:
         await trace.event("cache", target="catalog", result="hit", hits=len(cached))
         return cached
     await trace.event("cache", target="catalog", result="miss")
-    started = time.perf_counter()
-    text = await client.call_tool("list_documents", {"since": ""})
+    text = await traced_mcp(
+        client,
+        trace,
+        "list_documents",
+        {"since": ""},
+        measure=lambda body: len(parse_catalog(body).documents),
+    )
     view = parse_catalog(text)
     documents = [] if view.error else list(view.documents)
-    await trace.event(
-        "mcp",
-        tool="list_documents",
-        arguments={"since": ""},
-        hits=len(documents),
-        duration_ms=round((time.perf_counter() - started) * 1000, 1),
-        error=bool(view.error),
-    )
     if not view.error:
         _CATALOG.set("catalog", documents)
     return documents
@@ -245,21 +237,48 @@ async def _load_text(
     if isinstance(cached, str):
         await trace.event("cache", target="fulltext", result="hit", doc_id=doc_id)
         return cached, False
-    started = time.perf_counter()
-    text = await client.call_tool("get_document_text", {"doc_id": doc_id})
+    text = await traced_mcp(
+        client,
+        trace,
+        "get_document_text",
+        {"doc_id": doc_id},
+        measure=_text_hits,
+    )
     missing = text.startswith("Document not found")
     failed = text.startswith("Error ") or missing
-    await trace.event(
-        "mcp",
-        tool="get_document_text",
-        arguments={"doc_id": doc_id},
-        hits=0 if failed else 1,
-        duration_ms=round((time.perf_counter() - started) * 1000, 1),
-        error=failed,
-    )
     if not failed:
         _FULLTEXT.set(doc_id, text)
     return text, failed
+
+
+def _text_hits(body: str) -> int:
+    """Count a full-text read as one hit unless the tool reported an error."""
+    if body.startswith(("Error ", "Document not found")):
+        return 0
+    return 1
+
+
+def _page_image_id(passage: Any) -> str:
+    """Use the server id, or build ``page:{doc}:{n+1}`` for a PDF hit.
+
+    ``search_domain_knowledge`` adds ``page_image_id`` only for ``pdf_chunk``
+    and ``pdf_figure`` whose catalog filename ends in ``.pdf``. Other text
+    hits stay without a thumbnail. Qdrant ``page_number`` is 0-based.
+    """
+    supplied = getattr(passage, "page_image_id", None) or ""
+    if supplied and parse_page_image_id(supplied):
+        return supplied
+    name = str(getattr(passage, "source", "") or "").lower()
+    kind = str(getattr(passage, "source_type", "") or "").lower()
+    if not (name.endswith(".pdf") or kind.startswith("pdf_")):
+        return ""
+    doc_id = str(getattr(passage, "doc_id", "") or "")
+    if not doc_id:
+        return ""
+    built = page_image_id_from_zero_based(
+        doc_id, getattr(passage, "page_number", None)
+    )
+    return built or ""
 
 
 def _facts_from_search(text: str) -> list[Fact]:
@@ -274,9 +293,10 @@ def _facts_from_search(text: str) -> list[Fact]:
             image_id=passage.image_id,
             content=passage.content,
         )
+        page_image_id = _page_image_id(passage)
         for fact in built:
-            if passage.page_image_id:
-                fact.page_image_id = passage.page_image_id
+            if page_image_id:
+                fact.page_image_id = page_image_id
         facts.extend(built)
     return facts
 

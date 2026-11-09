@@ -15,6 +15,7 @@ async function submitQuery() {
     return;
   }
   clearTrace();
+  appendTrace(`${stamp()} → dotaz odeslán`, "run");
   const response = await fetch("/api/answer/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -47,11 +48,10 @@ async function submitQuery() {
       }
       const event = JSON.parse(line.slice(6));
       if (event.step === "done") {
+        settleRunning();
         renderStructuredAnswer(event.answer || {});
-      } else if (event.step === "error") {
-        appendTrace(`error ${event.error || ""}`);
       } else {
-        appendTrace(formatTrace(event));
+        appendEvent(event);
       }
     }
   }
@@ -297,22 +297,109 @@ async function loadImage(imageId) {
   return { url: URL.createObjectURL(blob) };
 }
 
-function formatTrace(event) {
-  const copy = { ...event };
-  delete copy.step;
-  const clock = event.t_ms != null ? `${event.t_ms} ms` : "";
-  const duration = event.duration_ms != null ? ` trvání ${event.duration_ms} ms` : "";
-  return `${clock} ${event.step}${duration} ${JSON.stringify(copy)}`.trim();
+function appendEvent(event) {
+  const view = formatTrace(event);
+  if (view.settle) {
+    const running = [
+      ...document.querySelectorAll(`#trace .run[data-kind="${view.kind}"]`),
+    ];
+    const match =
+      running.find((node) => node.dataset.tool === (view.tool || "")) || running[0];
+    if (match) {
+      match.classList.remove("run");
+    }
+  }
+  appendTrace(`${stamp(event.t_ms)} ${view.text}`, view.kind, view.run, view.tool);
 }
 
-function appendTrace(line) {
+function formatTrace(event) {
+  if (event.step === "mcp" && event.phase === "start") {
+    return {
+      kind: "mcp",
+      run: true,
+      tool: event.tool || "",
+      text: `→ ${event.tool}(${formatArgs(event.arguments)})`,
+    };
+  }
+  if (event.step === "mcp" && event.phase === "end") {
+    const status = event.error ? "chyba" : `${event.hits ?? 0} hitů`;
+    return {
+      kind: event.error ? "error" : "mcp",
+      settle: true,
+      tool: event.tool || "",
+      text: `← ${event.tool}: ${status}, ${event.duration_ms ?? 0} ms`,
+    };
+  }
+  if (event.step === "llm" && event.phase === "start") {
+    return {
+      kind: "llm",
+      run: true,
+      tool: "llm",
+      text: `→ llm(${event.model || "model"})`,
+    };
+  }
+  if (event.step === "llm" && event.phase === "end") {
+    const status = event.called
+      ? `${event.prompt_tokens || 0} tokenů`
+      : event.reason || event.error || "bez modelu";
+    return {
+      kind: event.error ? "error" : "llm",
+      settle: true,
+      tool: "llm",
+      text: `← llm: ${status}, ${event.duration_ms ?? 0} ms`,
+    };
+  }
+  if (event.step === "error" || event.error) {
+    return { kind: "error", text: `chyba ${event.error || event.step}` };
+  }
+  if (event.step === "status") {
+    return { kind: "", run: true, text: "→ dotaz přijat" };
+  }
+  return { kind: "", text: event.step || "" };
+}
+
+function formatArgs(value) {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+  const text = JSON.stringify(value);
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+}
+
+function stamp(tMs) {
+  const clock = new Intl.DateTimeFormat("cs-CZ", {
+    timeZone: "Europe/Prague",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date());
+  return tMs == null ? clock : `${clock} +${tMs} ms`;
+}
+
+function appendTrace(line, kind, running, tool) {
   const node = document.querySelector("#trace");
-  node.textContent += `${line}\n`;
+  const row = document.createElement("p");
+  row.className = `trace-line${kind ? ` ${kind}` : ""}${running ? " run" : ""}`;
+  if (kind) {
+    row.dataset.kind = kind;
+  }
+  if (tool) {
+    row.dataset.tool = tool;
+  }
+  row.textContent = line;
+  node.append(row);
   node.scrollTop = node.scrollHeight;
 }
 
+function settleRunning() {
+  document.querySelectorAll("#trace .run").forEach((node) => {
+    node.classList.remove("run");
+  });
+}
+
 function clearTrace() {
-  document.querySelector("#trace").textContent = "";
+  document.querySelector("#trace").replaceChildren();
 }
 
 document.querySelector("#copy-trace").addEventListener("click", () => {

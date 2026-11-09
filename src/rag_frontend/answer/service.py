@@ -13,7 +13,7 @@ from rag_frontend.answer.pages import bind_cache as bind_page_cache
 from rag_frontend.answer.prompt import template_answer, user_payload
 from rag_frontend.answer.retrieve import bind_cache, retrieve
 from rag_frontend.answer.synthesize import LlmClient, estimate_usd
-from rag_frontend.answer.trace import Trace
+from rag_frontend.answer.trace import Trace, traced_mcp
 from rag_frontend.config import Settings
 from rag_frontend.mcp_client.parse import parse_images, parse_search
 from rag_frontend.mcp_client.session import McpToolClient
@@ -29,44 +29,47 @@ async def _attach_images(
     trace: Trace,
 ) -> None:
     """Add picture ids from image search and each relevant document."""
-    started = time.perf_counter()
-    text = await client.call_tool(
+    text = await traced_mcp(
+        client,
+        trace,
         "search_images",
         {"query": query, "limit": 5, "hybrid": False},
+        measure=lambda body: len(parse_search(body).passages),
     )
     view = parse_search(text)
     by_doc = {fact.doc_id: fact for fact in relevant if fact.doc_id}
-    picture_hits = 0
     for passage in view.passages:
         if not passage.image_id:
             continue
-        picture_hits += 1
         fact = by_doc.get(passage.doc_id or "")
         if fact is not None and passage.image_id not in fact.image_ids:
             fact.image_ids.append(passage.image_id)
-    await trace.event(
-        "mcp",
-        tool="search_images",
-        arguments={"query": query, "limit": 5},
-        hits=picture_hits,
-        duration_ms=round((time.perf_counter() - started) * 1000, 1),
-    )
     for fact in relevant:
         if not fact.doc_id:
             continue
-        one = time.perf_counter()
-        raw = await client.call_tool("get_document_images", {"doc_id": fact.doc_id})
+        raw = await traced_mcp(
+            client,
+            trace,
+            "get_document_images",
+            {"doc_id": fact.doc_id},
+            measure=lambda body: len(parse_images(body).images),
+        )
         parsed = parse_images(raw)
         for image in parsed.images:
             if image.image_id not in fact.image_ids:
                 fact.image_ids.append(image.image_id)
-        await trace.event(
-            "mcp",
-            tool="get_document_images",
-            arguments={"doc_id": fact.doc_id},
-            hits=len(parsed.images),
-            duration_ms=round((time.perf_counter() - one) * 1000, 1),
-        )
+
+
+async def _llm_skipped(trace: Trace, reason: str) -> None:
+    """Record that the model was not called, as a finished LLM step."""
+    await trace.event(
+        "llm",
+        phase="end",
+        called=False,
+        reason=reason,
+        duration_ms=0,
+        hits=0,
+    )
 
 
 def configure_answer_cache(ttl_seconds: int) -> None:
@@ -175,7 +178,7 @@ async def _compose(
 ) -> tuple[str, int, int, str, bool, str]:
     """Return markdown, token counts, model, whether chat ran, and why it did not."""
     if not relevant:
-        await trace.event("llm", called=False, reason="žádný relevantní hit")
+        await _llm_skipped(trace, "žádný relevantní hit")
         return (
             template_answer(query, relevant, noise),
             0,
@@ -185,35 +188,34 @@ async def _compose(
             "žádný relevantní hit",
         )
     if not use_llm or not settings.answer_use_llm:
-        await trace.event("llm", called=False, reason="režim bez LLM")
+        await _llm_skipped(trace, "režim bez LLM")
         return template_answer(query, relevant, noise), 0, 0, "", False, "režim bez LLM"
     if not settings.llm_api_key:
-        await trace.event("llm", called=False, reason="chybí klíč")
+        await _llm_skipped(trace, "chybí klíč")
         return template_answer(query, relevant, noise), 0, 0, "", False, "chybí klíč"
     decision: BudgetDecision = _BUDGET.check(email or "anonymous")
     if not decision.allowed:
-        await trace.event("llm", called=False, reason=decision.reason)
+        await _llm_skipped(trace, decision.reason)
         return template_answer(query, relevant, noise), 0, 0, "", False, decision.reason
     payload = user_payload(query, variants, relevant, noise)
-    await trace.event(
-        "llm",
-        called=True,
-        reason="syntéza",
-        prompt_preview=payload[:120],
-    )
+    await trace.event("llm", phase="start", model=settings.llm_model)
     started = time.perf_counter()
     try:
         result = await LlmClient(settings).complete(payload)
     except Exception as exc:
         await trace.event(
-            "error",
-            where="llm",
+            "llm",
+            phase="end",
+            called=False,
             error=type(exc).__name__,
             duration_ms=round((time.perf_counter() - started) * 1000, 1),
+            hits=0,
         )
         return template_answer(query, relevant, noise), 0, 0, "", False, "chyba modelu"
     await trace.event(
         "llm",
+        phase="end",
+        called=True,
         model=result.model,
         prompt_tokens=result.prompt_tokens,
         completion_tokens=result.completion_tokens,
@@ -222,6 +224,7 @@ async def _compose(
         http_status=result.http_status,
         fallback=result.calls > 1,
         calls=result.calls,
+        hits=1,
     )
     _BUDGET.add(email or "anonymous", result.prompt_tokens, result.completion_tokens)
     return (

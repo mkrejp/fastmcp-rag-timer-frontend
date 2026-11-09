@@ -233,7 +233,7 @@ main.answer-layout {
 }
 
 #trace {
-  height: 16rem;
+  height: 14rem;
   overflow: auto;
   margin: 0;
   padding: 0.75rem;
@@ -241,7 +241,28 @@ main.answer-layout {
   color: #f6f1e8;
   font-family: ui-monospace, "Cascadia Mono", monospace;
   font-size: 0.78rem;
-  white-space: pre;
+}
+
+.trace-line {
+  margin: 0 0 0.2rem;
+  white-space: pre-wrap;
+}
+
+.trace-line.mcp {
+  color: #9fd6d2;
+}
+
+.trace-line.llm {
+  color: #e6c27a;
+}
+
+.trace-line.error {
+  color: #ffb4a2;
+}
+
+.trace-line.run::after {
+  content: " ●";
+  color: #f6f1e8;
 }
 
 .page-preview {
