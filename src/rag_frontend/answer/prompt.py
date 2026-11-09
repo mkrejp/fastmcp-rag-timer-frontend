@@ -33,18 +33,31 @@ def user_payload(
     variants: list[str],
     relevant: list[Fact],
     noise: list[Fact],
+    *,
+    images: list[dict[str, str]] | None = None,
 ) -> str:
     """Compact JSON for the single synthesis call. No raw OCR."""
+    if images is None:
+        image_rows = [
+            {"image_id": image_id, "caption": item.title[:120]}
+            for item in relevant[:5]
+            for image_id in item.image_ids
+        ]
+    else:
+        image_rows = [
+            {
+                "image_id": item["image_id"],
+                "caption": item.get("caption", "")[:120],
+            }
+            for item in images[:5]
+            if item.get("image_id")
+        ]
     return json.dumps(
         {
             "query": query,
             "variants": variants,
             "objects": [_for_model(item) for item in relevant[:5]],
-            "images": [
-                {"image_id": image_id, "caption": item.title[:120]}
-                for item in relevant[:5]
-                for image_id in item.image_ids
-            ],
+            "images": image_rows,
             "noise": [
                 {
                     "title": item.title,
@@ -59,7 +72,13 @@ def user_payload(
     )
 
 
-def template_answer(query: str, relevant: list[Fact], noise: list[Fact]) -> str:
+def template_answer(
+    query: str,
+    relevant: list[Fact],
+    noise: list[Fact],
+    *,
+    images: list[dict[str, str]] | None = None,
+) -> str:
     """Czech prose used when the model is not called."""
     if not relevant:
         opening = f"**K dotazu „{query}“ server nic jistého neví.**"
@@ -86,7 +105,8 @@ def template_answer(query: str, relevant: list[Fact], noise: list[Fact]) -> str:
             sentence += f". {fact.note}"
         sentence += f". [{index}]"
         paragraphs.append(sentence)
-    if any(fact.image_ids for fact in relevant):
+    has_images = bool(images) or any(fact.image_ids for fact in relevant)
+    if has_images:
         paragraphs.append("K některým záznamům server má uložený obrázek.")
     elif relevant:
         paragraphs.append("K těmto záznamům server obrázek nemá.")
@@ -97,8 +117,7 @@ def template_answer(query: str, relevant: list[Fact], noise: list[Fact]) -> str:
         )
     if noise:
         described = "; ".join(
-            f"{fact.title} ({fact.filename})"
-            + (f", {fact.note}" if fact.note else "")
+            f"{fact.title} ({fact.filename})" + (f", {fact.note}" if fact.note else "")
             for fact in noise[:8]
         )
         limits.append(

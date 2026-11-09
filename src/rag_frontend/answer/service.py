@@ -15,11 +15,23 @@ from rag_frontend.answer.retrieve import bind_cache, retrieve
 from rag_frontend.answer.synthesize import LlmClient, estimate_usd
 from rag_frontend.answer.trace import Trace, traced_mcp
 from rag_frontend.config import Settings
-from rag_frontend.mcp_client.parse import parse_images, parse_search
+from rag_frontend.mcp_client.parse import Passage, parse_search
 from rag_frontend.mcp_client.session import McpToolClient
 
 _ANSWERS = TtlCache(600)
 _BUDGET = TokenBudget()
+
+
+def _caption_from_passage(passage: Passage) -> str:
+    """Prefer search Content, else filename + page, else source name."""
+    content = (passage.content or "").strip()
+    if content:
+        return content.split("\n", 1)[0][:120]
+    source = (passage.source or "").strip()
+    page = (passage.page_number or "").strip()
+    if source and page:
+        return f"{source}, strana {page}"[:120]
+    return (source or "Obrázek")[:120]
 
 
 async def _attach_images(
@@ -27,37 +39,60 @@ async def _attach_images(
     query: str,
     relevant: list[Any],
     trace: Trace,
-) -> None:
-    """Add picture ids from image search and each relevant document."""
+) -> list[dict[str, str]]:
+    """Build the answer gallery from query-ranked ``search_images`` hits.
+
+    Hits are kept even when their ``doc_id`` is not among the text-classified
+    relevant facts. Matching hits are also copied onto those facts for the
+    synthesis prompt. Ids already attached during text retrieval (for example
+    an AKON postcard) fill remaining gallery slots. Document image catalogs
+    are never dumped here.
+    """
     text = await traced_mcp(
         client,
         trace,
         "search_images",
-        {"query": query, "limit": 5, "hybrid": False},
+        {"query": query, "limit": 5, "hybrid": True},
         measure=lambda body: len(parse_search(body).passages),
     )
     view = parse_search(text)
     by_doc = {fact.doc_id: fact for fact in relevant if fact.doc_id}
+    gallery: list[dict[str, str]] = []
+    seen: set[str] = set()
     for passage in view.passages:
-        if not passage.image_id:
+        if not passage.image_id or passage.image_id in seen:
             continue
+        seen.add(passage.image_id)
+        caption = _caption_from_passage(passage)
+        gallery.append(
+            {
+                "image_id": passage.image_id,
+                "doc_id": passage.doc_id or "",
+                "caption": caption,
+            }
+        )
         fact = by_doc.get(passage.doc_id or "")
         if fact is not None and passage.image_id not in fact.image_ids:
             fact.image_ids.append(passage.image_id)
+        if len(gallery) >= 5:
+            break
     for fact in relevant:
-        if not fact.doc_id:
-            continue
-        raw = await traced_mcp(
-            client,
-            trace,
-            "get_document_images",
-            {"doc_id": fact.doc_id},
-            measure=lambda body: len(parse_images(body).images),
-        )
-        parsed = parse_images(raw)
-        for image in parsed.images:
-            if image.image_id not in fact.image_ids:
-                fact.image_ids.append(image.image_id)
+        if len(gallery) >= 5:
+            break
+        for image_id in fact.image_ids:
+            if image_id in seen:
+                continue
+            seen.add(image_id)
+            gallery.append(
+                {
+                    "image_id": image_id,
+                    "doc_id": fact.doc_id or "",
+                    "caption": (fact.title or fact.filename or "Obrázek")[:120],
+                }
+            )
+            if len(gallery) >= 5:
+                break
+    return gallery
 
 
 async def _llm_skipped(trace: Trace, reason: str) -> None:
@@ -100,7 +135,7 @@ async def answer_query(
         entity=entity_pattern(query),
         region_prefixes=region_prefixes(query),
     )
-    await _attach_images(client, query, relevant, log)
+    images = await _attach_images(client, query, relevant, log)
     await attach_page_previews(client, query, relevant, log)
     for fact in noise:
         fact.page_image_id = ""
@@ -137,12 +172,8 @@ async def answer_query(
         email=email,
         use_llm=use_llm,
         trace=log,
+        images=images,
     )
-    images = [
-        {"image_id": image_id, "doc_id": fact.doc_id, "caption": fact.title}
-        for fact in relevant
-        for image_id in fact.image_ids
-    ]
     payload = {
         "answer_markdown": text,
         "objects": [fact.to_dict() for fact in relevant],
@@ -175,12 +206,14 @@ async def _compose(
     email: str,
     use_llm: bool,
     trace: Trace,
+    images: list[dict[str, str]] | None = None,
 ) -> tuple[str, int, int, str, bool, str]:
     """Return markdown, token counts, model, whether chat ran, and why it did not."""
+    gallery = images or []
     if not relevant:
         await _llm_skipped(trace, "žádný relevantní hit")
         return (
-            template_answer(query, relevant, noise),
+            template_answer(query, relevant, noise, images=gallery),
             0,
             0,
             "",
@@ -189,15 +222,36 @@ async def _compose(
         )
     if not use_llm or not settings.answer_use_llm:
         await _llm_skipped(trace, "režim bez LLM")
-        return template_answer(query, relevant, noise), 0, 0, "", False, "režim bez LLM"
+        return (
+            template_answer(query, relevant, noise, images=gallery),
+            0,
+            0,
+            "",
+            False,
+            "režim bez LLM",
+        )
     if not settings.llm_api_key:
         await _llm_skipped(trace, "chybí klíč")
-        return template_answer(query, relevant, noise), 0, 0, "", False, "chybí klíč"
+        return (
+            template_answer(query, relevant, noise, images=gallery),
+            0,
+            0,
+            "",
+            False,
+            "chybí klíč",
+        )
     decision: BudgetDecision = _BUDGET.check(email or "anonymous")
     if not decision.allowed:
         await _llm_skipped(trace, decision.reason)
-        return template_answer(query, relevant, noise), 0, 0, "", False, decision.reason
-    payload = user_payload(query, variants, relevant, noise)
+        return (
+            template_answer(query, relevant, noise, images=gallery),
+            0,
+            0,
+            "",
+            False,
+            decision.reason,
+        )
+    payload = user_payload(query, variants, relevant, noise, images=gallery)
     await trace.event("llm", phase="start", model=settings.llm_model)
     started = time.perf_counter()
     try:
@@ -211,7 +265,14 @@ async def _compose(
             duration_ms=round((time.perf_counter() - started) * 1000, 1),
             hits=0,
         )
-        return template_answer(query, relevant, noise), 0, 0, "", False, "chyba modelu"
+        return (
+            template_answer(query, relevant, noise, images=gallery),
+            0,
+            0,
+            "",
+            False,
+            "chyba modelu",
+        )
     await trace.event(
         "llm",
         phase="end",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -17,7 +18,8 @@ from rag_frontend.answer.expand import (
 from rag_frontend.answer.parsers import Fact, facts_from_passage, parse_building_hints
 from rag_frontend.answer.prompt import template_answer, user_payload
 from rag_frontend.answer.retrieve import reverify_facts, select_fulltext_rows
-from rag_frontend.answer.service import configure_answer_cache
+from rag_frontend.answer.service import _attach_images, configure_answer_cache
+from rag_frontend.answer.trace import Trace
 from rag_frontend.api.routes import create_app
 from rag_frontend.config import LLM_KEY_ENV, Settings, load_settings
 from rag_frontend.mcp_client.session import ImageBytes
@@ -330,8 +332,63 @@ def test_fulltext_priority_sections_and_homonyms() -> None:
     assert "doc_id" not in json.dumps(payload["noise"])
 
 
+def test_attach_images_prefers_search_over_ornament_catalog() -> None:
+    """Gallery uses search_images hits; does not dump get_document_images.
+
+    Relevant text fact is ornament-skuhravy-1906.pdf with a large catalog of
+    embeds available from get_document_images. search_images returns a cropped
+    figure from another document. The gallery must keep that hit with a
+    content-based caption and must not call get_document_images at all.
+    """
+    ornament_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    other_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    query_hit = "queryhit00000001"
+    ornament_ids = [f"ornament{index:08d}" for index in range(1, 6)]
+    fact = Fact(
+        kind="passage",
+        title="ornament-skuhravy-1906.pdf",
+        text="ornamentální předlohy",
+        doc_id=ornament_id,
+        filename="ornament-skuhravy-1906.pdf",
+    )
+    pictures = (
+        "Source: praha-vrsovice-secese.pdf (source_type=pdf_figure) "
+        f"doc_id={other_id} image_id={query_hit} page_number=3\n"
+        "Content: secesní fasáda Praha Vršovice\n"
+    )
+    client = FakeClient(
+        {
+            "search_images": pictures,
+            "get_document_images": {
+                ornament_id: json.dumps(
+                    [
+                        {"image_id": image_id, "page_number": index}
+                        for index, image_id in enumerate(ornament_ids, start=1)
+                    ]
+                ),
+                "*": "[]",
+            },
+        }
+    )
+    gallery = asyncio.run(
+        _attach_images(client, "Praha Vršovice a secese", [fact], Trace())
+    )
+
+    assert gallery == [
+        {
+            "image_id": query_hit,
+            "doc_id": other_id,
+            "caption": "secesní fasáda Praha Vršovice",
+        }
+    ]
+    assert fact.image_ids == []
+    assert all(name != "get_document_images" for name, _args in client.calls)
+    search_args = next(args for name, args in client.calls if name == "search_images")
+    assert search_args.get("hybrid") is True
+
+
 def test_answer_merges_images_and_traces_fulltext(monkeypatch: object) -> None:
-    """Image search and document images are merged; Novita sees ids and captions."""
+    """Image search fills the gallery; catalog dumps are not merged in."""
     seen: list[str] = []
 
     class Capture:
@@ -471,10 +528,14 @@ def test_answer_merges_images_and_traces_fulltext(monkeypatch: object) -> None:
         "Nájemní domy čp. 486, Žitomírská, Praha 10-Vršovice"
     ]
     assert all(len(item["text"]) <= 280 for item in body["objects"])
-    assert {item["image_id"] for item in body["images"]} == {
-        "aabbccddeeff0011",
-        "0011223344556677",
-    }
+    assert body["images"] == [
+        {
+            "image_id": "aabbccddeeff0011",
+            "doc_id": hints_id,
+            "caption": "fasáda",
+        }
+    ]
+    assert not any(name == "get_document_images" for name, _args in client.calls)
     notes = {item["note"] for item in body["noise"]}
     assert "jen vektorová podobnost" in notes
     assert "0 shod" in notes
@@ -492,15 +553,12 @@ def test_answer_merges_images_and_traces_fulltext(monkeypatch: object) -> None:
     sent = seen[0]
     assert "TAJNY OCR" not in sent
     assert "aabbccddeeff0011" in sent
-    assert "0011223344556677" in sent
+    assert "0011223344556677" not in sent
     assert "Nuselská" not in sent
     parsed = json.loads(sent)
     assert len(parsed["objects"]) <= 5
     assert all(len(item["text"]) <= 280 for item in parsed["objects"])
-    assert {item["image_id"] for item in parsed["images"]} == {
-        "aabbccddeeff0011",
-        "0011223344556677",
-    }
+    assert parsed["images"] == [{"image_id": "aabbccddeeff0011", "caption": "fasáda"}]
 
 
 def test_llm_key_env_name(monkeypatch: object) -> None:
