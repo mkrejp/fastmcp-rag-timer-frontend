@@ -16,7 +16,7 @@ Web frontend  ->  MCP client  ->  MCP server  ->  upstream
 (this page)       (this process)   /mcp            Qdrant, FastEmbed
 ```
 
-The page is same-origin JSON plus HTML. It never holds `MCP_API_TOKEN` and never calls `/mcp`. The server has no CORS middleware, and picture URLs on that server require the same bearer token, so this app proxies image bytes.
+The page is same-origin JSON plus HTML. It never holds `MCP_API_TOKEN` and never calls `/mcp`. Text responses and logs have that runtime value removed before they leave the process. The server has no CORS middleware, and picture URLs on that server require the same bearer token, so this app proxies image bytes.
 
 ## inventory
 
@@ -24,8 +24,9 @@ The page is same-origin JSON plus HTML. It never holds `MCP_API_TOKEN` and never
 | --- | --- | --- |
 | `MCP_SERVER_URL` | `https://rag-timer-00001-production.up.railway.app/mcp/` | Streamable HTTP. Keep the trailing slash. |
 | `MCP_API_TOKEN` | unset | Required for query routes. The page still loads without it. |
-| `HOST` | `127.0.0.1` | Bind address for this app. |
-| `PORT` | `8000` | Port for this app. |
+| `HOST` | `0.0.0.0` | Bind address. Railway must reach every interface. |
+| `PORT` | `8000` | Port for this app. Railway sets this to the domain port, `8080`. |
+| Public URL | `https://fastmcp-rag-timer-frontend-production.up.railway.app` | Production domain. The browser uses this origin. |
 | `search_domain_knowledge` | read | Text hits. A hit may include `image_id`. |
 | `search_images` | read | Stored pictures. Optional on each question. |
 | `list_documents` | read | Catalog panel. |
@@ -42,7 +43,7 @@ Ingest, delete, and locality-admin tools are not called.
 1. `uv sync`
 2. `export MCP_API_TOKEN=…`
 3. `uv run python -m rag_frontend`
-4. Open `http://127.0.0.1:8000/`
+4. Open `http://127.0.0.1:8000/`. Production is `https://fastmcp-rag-timer-frontend-production.up.railway.app`.
 
 ### query — What the page shows
 
@@ -50,7 +51,7 @@ Ingest, delete, and locality-admin tools are not called.
 2. The transcript lists text passages and, when the picture checkbox is on, picture hits.
 3. A hit with an image id loads `/api/images/{image_id}`.
 4. Open document loads full text and the pictures stored for that document.
-5. The catalog lists filename, id, time, chunk count, status, and mime. Hashes and disk paths stay on the server.
+5. The catalog lists filename, id, time, chunk count, status, and mime. Each row shows the document's first stored picture when it has one. Hashes and disk paths stay on the server.
 
 ## references
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from rag_frontend.mcp_client.session import (
     McpToolClient,
     MissingTokenError,
 )
+from rag_frontend.redact import RedactTokenMiddleware, install_log_redaction
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 _DOC_ID = re.compile(
@@ -73,6 +75,7 @@ class CatalogDocument(BaseModel):
     uploaded_at: str | None = None
     chunk_count: int | None = None
     status: str | None = None
+    thumbnail_image_id: str | None = None
 
 
 class CatalogResponse(BaseModel):
@@ -117,9 +120,11 @@ def create_app(
     Query routes refuse to call MCP when ``MCP_API_TOKEN`` is missing. The
     HTML page still loads.
     """
+    install_log_redaction(settings.mcp_api_token)
     app = FastAPI(title="RAG query")
     app.state.settings = settings
     app.state.mcp_client = client if client is not None else _default_client(settings)
+    app.add_middleware(RedactTokenMiddleware, token=settings.mcp_api_token)
 
     @app.get("/api/catalog", response_model=CatalogResponse)
     async def catalog(request: Request) -> CatalogResponse:
@@ -129,7 +134,13 @@ def create_app(
         view = parse_catalog(text)
         if view.error:
             raise HTTPException(status_code=502, detail=view.error)
-        documents = [CatalogDocument.model_validate(row) for row in view.documents]
+        thumbnails = await asyncio.gather(
+            *[_thumbnail_id(tool_client, row.get("doc_id")) for row in view.documents]
+        )
+        documents = []
+        for row, thumbnail_id in zip(view.documents, thumbnails, strict=True):
+            row["thumbnail_image_id"] = thumbnail_id
+            documents.append(CatalogDocument.model_validate(row))
         return CatalogResponse(documents=documents, message=view.message)
 
     @app.post("/api/search", response_model=SearchResponse)
@@ -223,6 +234,20 @@ def _default_client(settings: Settings) -> HttpMcpClient | None:
     if not settings.token_configured:
         return None
     return HttpMcpClient(settings)
+
+
+async def _thumbnail_id(client: McpToolClient, doc_id: object) -> str | None:
+    """Return the first stored picture for a catalog row, if there is one."""
+    if not isinstance(doc_id, str) or not doc_id:
+        return None
+    try:
+        text = await client.call_tool("get_document_images", {"doc_id": doc_id})
+    except (MissingTokenError, McpCallError):
+        return None
+    view = parse_images(text)
+    if view.error or not view.images:
+        return None
+    return view.images[0].image_id
 
 
 def _require_client(request: Request) -> McpToolClient:
