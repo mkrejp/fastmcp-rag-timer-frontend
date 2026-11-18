@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import json
 
-from rag_frontend.mcp_client.parse import parse_catalog, parse_images, parse_search
+from rag_frontend.mcp_client.parse import (
+    parse_catalog,
+    parse_context_search,
+    parse_document_context,
+    parse_images,
+    parse_search,
+)
 
 _DOC = "11111111-1111-1111-1111-111111111111"
 _IMAGE = "0123456789abcdef"
@@ -135,3 +141,100 @@ def test_parse_images_missing_document() -> None:
     view = parse_images(f"Document not found: {_DOC}")
     assert view.error == f"Document not found: {_DOC}"
     assert view.images == ()
+
+
+def test_parse_context_search_keeps_sections_and_drops_secrets() -> None:
+    """Context hits keep public sections and drop hashes and paths."""
+    text = json.dumps(
+        [
+            {
+                "doc_id": _DOC,
+                "parent_document": "domain.txt",
+                "source_type": "pdf_chunk",
+                "chunk_index": 0,
+                "score": 0.91,
+                "content": "timer RAG",
+                "url": "https://upstream.test/x",
+                "catalog": {
+                    "doc_id": _DOC,
+                    "filename": "domain.txt",
+                    "sha256": "deadbeef",
+                    "status": "ready",
+                },
+                "versions": {"count": 1, "versions": [{"version": 1}]},
+                "locality_links": {
+                    "links": [{"name": "Praha", "obec_id": "554782"}],
+                    "returned": 1,
+                    "has_more": False,
+                },
+                "related_documents": [
+                    {
+                        "doc_id": "22222222-2222-2222-2222-222222222222",
+                        "filename": "peer.txt",
+                        "sha256": "hide",
+                    }
+                ],
+                "neighbor_chunks": [
+                    {"chunk_index": 1, "page": 0, "text": "next chunk"}
+                ],
+                "lifecycle": {"doc_status": "active"},
+                "geo": {"lat": 50.0, "lon": 14.0},
+            }
+        ]
+    )
+    view = parse_context_search(text)
+    assert view.error is None
+    hit = view.hits[0].to_dict()
+    assert hit["doc_id"] == _DOC
+    assert hit["content"] == "timer RAG"
+    assert hit["catalog"]["filename"] == "domain.txt"
+    assert "sha256" not in hit["catalog"]
+    assert "url" not in hit
+    assert hit["versions"]["count"] == 1
+    assert hit["locality_links"]["returned"] == 1
+    assert hit["related_documents"][0]["filename"] == "peer.txt"
+    assert "sha256" not in hit["related_documents"][0]
+    assert hit["neighbor_chunks"][0]["text"] == "next chunk"
+    assert hit["lifecycle"]["doc_status"] == "active"
+    assert hit["geo"]["lat"] == 50.0
+
+
+def test_parse_context_search_catalog_rows_without_wrap() -> None:
+    """Plain catalog matches become catalog-shaped hits without secrets."""
+    text = json.dumps(
+        [
+            {
+                "doc_id": _DOC,
+                "filename": "catalog-search.txt",
+                "mime": "text/plain",
+                "sha256": "abc",
+                "status": "ready",
+                "chunk_count": 1,
+            }
+        ]
+    )
+    hit = parse_context_search(text).hits[0].to_dict()
+    assert hit["doc_id"] == _DOC
+    assert hit["catalog"]["filename"] == "catalog-search.txt"
+    assert "sha256" not in hit["catalog"]
+
+
+def test_parse_document_context_missing_and_error() -> None:
+    """Missing documents and tool errors stay structured."""
+    missing = parse_document_context(f"Document not found: {_DOC}")
+    error = parse_document_context("Error get_document_context: down")
+    assert missing.error == f"Document not found: {_DOC}"
+    assert error.error == "Error get_document_context: down"
+    ok = parse_document_context(
+        json.dumps(
+            {
+                "doc_id": _DOC,
+                "catalog": {"doc_id": _DOC, "filename": "x.txt", "sha256": "z"},
+                "neighbor_chunks": [],
+            }
+        )
+    )
+    assert ok.error is None
+    assert ok.context is not None
+    assert ok.context["catalog"]["filename"] == "x.txt"
+    assert "sha256" not in ok.context["catalog"]

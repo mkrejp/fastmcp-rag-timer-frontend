@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RAG odpověď</title>
-    <link rel="stylesheet" href="/static/styles.css?v=3" />
+    <link rel="stylesheet" href="/static/styles.css?v=4" />
     <link
       rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -16,7 +16,25 @@
         <p class="eyebrow">fastmcp-rag-timer</p>
         <h1>Co o tom ví server</h1>
       </div>
-      <form id="query-form">
+      <div class="mode-row" role="tablist" aria-label="Režim">
+        <button
+          type="button"
+          class="mode-btn is-active"
+          data-mode="answer"
+          aria-pressed="true"
+        >
+          Odpověď
+        </button>
+        <button
+          type="button"
+          class="mode-btn"
+          data-mode="context"
+          aria-pressed="false"
+        >
+          Kontext
+        </button>
+      </div>
+      <form id="query-form" data-panel="answer">
         <label for="query">Dotaz</label>
         <textarea
           id="query"
@@ -29,8 +47,67 @@
           <button type="submit">Odpovědět</button>
         </div>
       </form>
+      <form id="context-form" data-panel="context" hidden>
+        <label for="context-query">Hledání s kontextem</label>
+        <textarea
+          id="context-query"
+          name="context-query"
+          rows="3"
+          placeholder="timer RAG / lokalita / název dokumentu"
+        ></textarea>
+        <fieldset class="section-flags">
+          <legend>Sekce kontextu</legend>
+          <label class="check"
+            ><input type="checkbox" name="include_catalog" checked />
+            katalog</label
+          >
+          <label class="check"
+            ><input type="checkbox" name="include_versions" checked />
+            verze</label
+          >
+          <label class="check"
+            ><input type="checkbox" name="include_locality" checked />
+            lokality</label
+          >
+          <label class="check"
+            ><input type="checkbox" name="include_related" checked />
+            související</label
+          >
+          <label class="check"
+            ><input type="checkbox" name="include_neighbors" checked />
+            sousední chunky</label
+          >
+        </fieldset>
+        <div class="form-row context-actions">
+          <label class="limit-label" for="context-limit"
+            >Hitů
+            <input
+              id="context-limit"
+              class="limit"
+              type="number"
+              min="1"
+              max="20"
+              value="3"
+            />
+          </label>
+          <label class="check"
+            ><input type="checkbox" id="catalog-wrap" />
+            katalog + kontext</label
+          >
+          <button type="submit" name="action" value="vector">
+            Hledat ve vektorech
+          </button>
+          <button type="submit" name="action" value="catalog" class="secondary">
+            Hledat v katalogu
+          </button>
+        </div>
+      </form>
       <p id="status" role="status"></p>
-      <section class="trace-panel" aria-label="Průběh dotazu">
+      <section
+        class="trace-panel"
+        data-panel="answer"
+        aria-label="Průběh dotazu"
+      >
         <div class="trace-bar">
           <h2>Průběh</h2>
           <button id="copy-trace" type="button">Kopírovat</button>
@@ -41,14 +118,35 @@
       </section>
     </header>
     <main class="answer-layout">
-      <article id="answer" hidden></article>
-      <p id="answer-note" class="quiet" hidden></p>
-      <div id="figures"></div>
-      <div id="map" hidden></div>
-      <details id="sources">
-        <summary>Zdroje</summary>
-        <div id="sources-body"></div>
-      </details>
+      <div data-panel="answer">
+        <article id="answer" hidden></article>
+        <p id="answer-note" class="quiet" hidden></p>
+        <div id="figures"></div>
+        <div id="map" hidden></div>
+        <details id="sources">
+          <summary>Zdroje</summary>
+          <div id="sources-body"></div>
+        </details>
+      </div>
+      <section
+        id="context-results"
+        data-panel="context"
+        hidden
+        aria-label="Kontextové výsledky"
+      >
+        <h2>Výsledky s kontextem</h2>
+        <p id="context-note" class="quiet" hidden></p>
+        <div id="context-hits"></div>
+        <aside id="document-context" hidden>
+          <div class="trace-bar">
+            <h2>Kontext dokumentu</h2>
+            <button id="close-doc-context" type="button" class="secondary">
+              Zavřít
+            </button>
+          </div>
+          <div id="document-context-body"></div>
+        </aside>
+      </section>
       <dialog id="page-lightbox">
         <form method="dialog">
           <button type="submit">Zavřít</button>
@@ -63,6 +161,6 @@
       </dialog>
     </main>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="/static/app.js?v=3"></script>
+    <script src="/static/app.js?v=4"></script>
   </body>
 </html>

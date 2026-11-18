@@ -21,6 +21,8 @@ from rag_frontend.auth import install_auth
 from rag_frontend.config import Settings
 from rag_frontend.mcp_client.parse import (
     parse_catalog,
+    parse_context_search,
+    parse_document_context,
     parse_images,
     parse_search,
 )
@@ -50,6 +52,34 @@ class SearchRequest(BaseModel):
     include_images: bool = True
 
 
+class ContextSearchRequest(BaseModel):
+    """Body for ``POST /api/search/context`` (MCP ``search_with_context``)."""
+
+    query: str
+    limit: int = 3
+    obec_id: str = ""
+    cast_obce: str = ""
+    include_figures: bool = True
+    only_verified: bool = False
+    min_status: str = ""
+    include_superseded: bool = False
+    include_catalog: bool = True
+    include_versions: bool = True
+    include_locality: bool = True
+    include_related: bool = True
+    include_neighbors: bool = True
+    neighbor_radius: int = 1
+    locality_limit: int = 20
+
+
+class CatalogSearchRequest(BaseModel):
+    """Body for ``POST /api/catalog/search`` (MCP ``search_catalog_documents``)."""
+
+    query: str = ""
+    limit: int = 20
+    include_context: bool = False
+
+
 class PassageModel(BaseModel):
     """One retrieved passage, with an image id when the hit is a picture."""
 
@@ -71,6 +101,19 @@ class SearchResponse(BaseModel):
     message: str | None = None
     image_message: str | None = None
     raw: str | None = None
+
+
+class ContextSearchResponse(BaseModel):
+    """Enriched hits from ``search_with_context`` or catalog search."""
+
+    hits: list[dict[str, Any]] = Field(default_factory=list)
+    message: str | None = None
+
+
+class DocumentContextResponse(BaseModel):
+    """Context bundle for one document."""
+
+    context: dict[str, Any]
 
 
 class CatalogDocument(BaseModel):
@@ -192,6 +235,138 @@ def create_app(
             raw=view.raw,
         )
 
+    @app.post("/api/search/context", response_model=ContextSearchResponse)
+    async def search_context(
+        body: ContextSearchRequest, request: Request
+    ) -> ContextSearchResponse:
+        """Vector search with catalog/locality/neighbor context sections."""
+        query = body.query.strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="Enter a question.")
+        if body.limit < 1 or body.limit > _LIMIT_MAX:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Results must be from 1 to {_LIMIT_MAX}.",
+            )
+        if body.neighbor_radius < 0 or body.neighbor_radius > 3:
+            raise HTTPException(
+                status_code=400,
+                detail="Neighbor radius must be from 0 to 3.",
+            )
+        if body.locality_limit < 1 or body.locality_limit > 50:
+            raise HTTPException(
+                status_code=400,
+                detail="Locality limit must be from 1 to 50.",
+            )
+        tool_client = _require_client(request)
+        text = await _call(
+            tool_client,
+            "search_with_context",
+            {
+                "query": query,
+                "limit": body.limit,
+                "obec_id": body.obec_id,
+                "cast_obce": body.cast_obce,
+                "include_figures": body.include_figures,
+                "only_verified": body.only_verified,
+                "min_status": body.min_status,
+                "include_superseded": body.include_superseded,
+                "include_catalog": body.include_catalog,
+                "include_versions": body.include_versions,
+                "include_locality": body.include_locality,
+                "include_related": body.include_related,
+                "include_neighbors": body.include_neighbors,
+                "neighbor_radius": body.neighbor_radius,
+                "locality_limit": body.locality_limit,
+            },
+        )
+        view = parse_context_search(text)
+        if view.error:
+            raise HTTPException(status_code=502, detail=view.error)
+        return ContextSearchResponse(
+            hits=[hit.to_dict() for hit in view.hits],
+            message=view.message,
+        )
+
+    @app.post("/api/catalog/search", response_model=ContextSearchResponse)
+    async def catalog_search(
+        body: CatalogSearchRequest, request: Request
+    ) -> ContextSearchResponse:
+        """Substring search over the on-disk catalog (no embeddings)."""
+        if body.limit < 1 or body.limit > 100:
+            raise HTTPException(
+                status_code=400,
+                detail="Results must be from 1 to 100.",
+            )
+        tool_client = _require_client(request)
+        text = await _call(
+            tool_client,
+            "search_catalog_documents",
+            {
+                "query": body.query,
+                "limit": body.limit,
+                "include_context": body.include_context,
+            },
+        )
+        view = parse_context_search(text)
+        if view.error:
+            raise HTTPException(status_code=502, detail=view.error)
+        return ContextSearchResponse(
+            hits=[hit.to_dict() for hit in view.hits],
+            message=view.message,
+        )
+
+    @app.get(
+        "/api/documents/{doc_id}/context",
+        response_model=DocumentContextResponse,
+    )
+    async def document_context(
+        doc_id: str,
+        request: Request,
+        chunk_index: int | None = None,
+        include_catalog: bool = True,
+        include_versions: bool = True,
+        include_locality: bool = True,
+        include_related: bool = True,
+        include_neighbors: bool = True,
+        neighbor_radius: int = 1,
+        locality_limit: int = 20,
+    ) -> DocumentContextResponse:
+        """Return reader-local context for one document without embedding."""
+        _check_doc_id(doc_id)
+        if neighbor_radius < 0 or neighbor_radius > 3:
+            raise HTTPException(
+                status_code=400,
+                detail="Neighbor radius must be from 0 to 3.",
+            )
+        if locality_limit < 1 or locality_limit > 50:
+            raise HTTPException(
+                status_code=400,
+                detail="Locality limit must be from 1 to 50.",
+            )
+        tool_client = _require_client(request)
+        arguments: dict[str, Any] = {
+            "doc_id": doc_id,
+            "include_catalog": include_catalog,
+            "include_versions": include_versions,
+            "include_locality": include_locality,
+            "include_related": include_related,
+            "include_neighbors": include_neighbors,
+            "neighbor_radius": neighbor_radius,
+            "locality_limit": locality_limit,
+        }
+        if chunk_index is not None:
+            arguments["chunk_index"] = chunk_index
+        text = await _call(tool_client, "get_document_context", arguments)
+        view = parse_document_context(text)
+        if view.error and view.error.startswith("Document not found"):
+            raise HTTPException(status_code=404, detail=view.error)
+        if view.error:
+            raise HTTPException(status_code=502, detail=view.error)
+        if view.context is None:
+            raise HTTPException(status_code=502, detail="Empty context response.")
+        return DocumentContextResponse(context=view.context)
+
     @app.get("/api/documents/{doc_id}/text", response_model=DocumentTextResponse)
     async def document_text(doc_id: str, request: Request) -> DocumentTextResponse:
         """Return processed full text for one document."""
@@ -282,8 +457,11 @@ def create_app(
                 await queue.put(None)
 
             # Padding plus the first event leave before any MCP call starts.
-            yield ":" + (" " * 2048) + "\n\n" + _sse(
-                {"step": "status", "phase": "start", "t_ms": 0}
+            yield (
+                ":"
+                + (" " * 2048)
+                + "\n\n"
+                + _sse({"step": "status", "phase": "start", "t_ms": 0})
             )
             task = asyncio.create_task(run())
             while True:
