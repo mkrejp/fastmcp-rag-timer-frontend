@@ -146,6 +146,128 @@ def test_search_can_skip_pictures() -> None:
     assert [name for name, _arguments in client.calls] == ["search_domain_knowledge"]
 
 
+def _context_hit() -> str:
+    """One JSON hit with the reader context sections."""
+    return json.dumps(
+        [
+            {
+                "doc_id": _DOC,
+                "parent_document": "domain.txt",
+                "source_type": "pdf_chunk",
+                "chunk_index": 0,
+                "score": 0.88,
+                "content": "timer RAG",
+                "catalog": {
+                    "doc_id": _DOC,
+                    "filename": "domain.txt",
+                    "sha256": "hide",
+                    "status": "ready",
+                },
+                "versions": {"count": 0, "versions": []},
+                "locality_links": {"links": [], "returned": 0, "has_more": False},
+                "related_documents": [],
+                "neighbor_chunks": [{"chunk_index": 1, "page": 0, "text": "neighbor"}],
+                "lifecycle": {"doc_status": "active"},
+                "geo": {"lat": 50.08, "lon": 14.44},
+            }
+        ]
+    )
+
+
+def test_search_context_returns_enriched_sections() -> None:
+    """Context search calls ``search_with_context`` and keeps public sections."""
+    client = FakeClient({"search_with_context": _context_hit()})
+    http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
+    response = http.post(
+        "/api/search/context",
+        json={
+            "query": "timer",
+            "limit": 2,
+            "include_catalog": True,
+            "include_neighbors": True,
+        },
+    )
+    assert response.status_code == 200
+    hit = response.json()["hits"][0]
+    assert hit["content"] == "timer RAG"
+    assert hit["catalog"]["filename"] == "domain.txt"
+    assert "sha256" not in hit["catalog"]
+    assert hit["neighbor_chunks"][0]["text"] == "neighbor"
+    assert hit["lifecycle"]["doc_status"] == "active"
+    assert hit["geo"]["lat"] == 50.08
+    name, arguments = client.calls[0]
+    assert name == "search_with_context"
+    assert arguments["query"] == "timer"
+    assert arguments["include_neighbors"] is True
+
+
+def test_catalog_search_and_document_context_routes() -> None:
+    """Catalog substring search and per-document context use the new tools."""
+    context = {
+        "doc_id": _DOC,
+        "catalog": {"doc_id": _DOC, "filename": "notes.txt", "sha256": "x"},
+        "versions": {"count": 1, "versions": [{"version": 1}]},
+        "locality_links": {"links": [], "returned": 0, "has_more": False},
+        "related_documents": [],
+        "neighbor_chunks": [],
+    }
+    client = FakeClient(
+        {
+            "search_catalog_documents": json.dumps(
+                [
+                    {
+                        "doc_id": _DOC,
+                        "filename": "notes.txt",
+                        "sha256": "x",
+                        "status": "ready",
+                    }
+                ]
+            ),
+            "get_document_context": json.dumps(context),
+        }
+    )
+    http = TestClient(create_app(_settings(), client, forced_user="tester@example.com"))
+    catalog = http.post(
+        "/api/catalog/search",
+        json={"query": "notes", "limit": 5, "include_context": False},
+    )
+    assert catalog.status_code == 200
+    assert catalog.json()["hits"][0]["catalog"]["filename"] == "notes.txt"
+    assert "sha256" not in catalog.json()["hits"][0]["catalog"]
+    doc = http.get(
+        f"/api/documents/{_DOC}/context",
+        params={"chunk_index": 0, "include_neighbors": True},
+    )
+    assert doc.status_code == 200
+    body = doc.json()["context"]
+    assert body["catalog"]["filename"] == "notes.txt"
+    assert "sha256" not in body["catalog"]
+    assert body["versions"]["count"] == 1
+    names = [name for name, _arguments in client.calls]
+    assert names == ["search_catalog_documents", "get_document_context"]
+    missing_client = FakeClient({"get_document_context": f"Document not found: {_DOC}"})
+    missing_http = TestClient(
+        create_app(_settings(), missing_client, forced_user="tester@example.com")
+    )
+    assert missing_http.get(f"/api/documents/{_DOC}/context").status_code == 404
+
+
+def test_context_ui_is_linked_from_the_page() -> None:
+    """The page exposes the context mode without removing the answer form."""
+    http = TestClient(
+        create_app(_settings(), FakeClient({}), forced_user="tester@example.com")
+    )
+    page = http.get("/")
+    assert page.status_code == 200
+    assert 'data-mode="context"' in page.text
+    assert 'id="context-form"' in page.text
+    assert 'id="context-hits"' in page.text
+    script = http.get("/static/app.js").text
+    assert "/api/search/context" in script
+    assert "/api/catalog/search" in script
+    assert "neighbor_chunks" in script
+
+
 def test_empty_query_does_not_call_mcp() -> None:
     """Blank questions are rejected before any tool call."""
     client = FakeClient({})

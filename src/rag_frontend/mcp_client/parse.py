@@ -10,9 +10,7 @@ from typing import Any
 _HEADER = re.compile(
     r"^Source: (?P<source>.*) \(source_type=(?P<source_type>[^)]+)\)(?P<rest>.*)$"
 )
-_TOKEN = re.compile(
-    r"(page_image_id|page_url|doc_id|page_number|image_id|url)=(\S+)"
-)
+_TOKEN = re.compile(r"(page_image_id|page_url|doc_id|page_number|image_id|url)=(\S+)")
 _NO_FACTS = "No relevant facts found."
 _NO_IMAGES = "No relevant images found."
 _NO_DOCUMENTS = "No documents stored."
@@ -25,6 +23,37 @@ _PUBLIC_FIELDS = (
     "chunk_count",
     "status",
 )
+_CONTEXT_SECTIONS = (
+    "catalog",
+    "lifecycle",
+    "geo",
+    "versions",
+    "locality_links",
+    "related_documents",
+    "neighbor_chunks",
+)
+_HIT_SCALAR_FIELDS = (
+    "doc_id",
+    "parent_document",
+    "source_type",
+    "page_number",
+    "page_image_id",
+    "image_id",
+    "score",
+    "content",
+    "chunk_index",
+    "caption",
+    "verification_status",
+    "confidence",
+    "lat",
+    "lon",
+    "geo_source",
+    "doc_status",
+    "superseded_by",
+    "supersedes",
+    "correction_note",
+)
+_DROP_KEYS = frozenset({"sha256", "file_path", "url"})
 
 
 @dataclass(frozen=True)
@@ -104,6 +133,34 @@ class CatalogView:
 
     documents: tuple[dict[str, Any], ...]
     message: str | None
+    error: str | None
+
+
+@dataclass(frozen=True)
+class ContextHit:
+    """One enriched hit from ``search_with_context`` or catalog context wrap."""
+
+    fields: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the hit for the JSON API."""
+        return dict(self.fields)
+
+
+@dataclass(frozen=True)
+class ContextSearchView:
+    """Parsed JSON list from a context search tool."""
+
+    hits: tuple[ContextHit, ...]
+    message: str | None
+    error: str | None
+
+
+@dataclass(frozen=True)
+class DocumentContextView:
+    """Parsed ``get_document_context`` JSON object."""
+
+    context: dict[str, Any] | None
     error: str | None
 
 
@@ -233,3 +290,96 @@ def _shape_document(entry: dict[str, Any]) -> dict[str, Any]:
         else:
             shaped[key] = None if value is None else str(value)
     return shaped
+
+
+def parse_context_search(text: str) -> ContextSearchView:
+    """Parse ``search_with_context`` / catalog-search JSON into public hits.
+
+    Tool ``Error …`` strings become ``error``. Empty lists are valid. Non-JSON
+    bodies that are not errors become a ``message`` so the page can show them.
+    """
+    stripped = text.strip()
+    if stripped.startswith("Error "):
+        return ContextSearchView((), None, stripped)
+    if stripped in {_NO_FACTS, _NO_DOCUMENTS}:
+        return ContextSearchView((), stripped, None)
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return ContextSearchView((), stripped, None)
+    if not isinstance(payload, list):
+        return ContextSearchView((), stripped, None)
+    hits = tuple(
+        ContextHit(_shape_context_hit(entry))
+        for entry in payload
+        if isinstance(entry, dict)
+    )
+    return ContextSearchView(hits, None, None)
+
+
+def parse_document_context(text: str) -> DocumentContextView:
+    """Parse ``get_document_context`` JSON into a public context bundle."""
+    stripped = text.strip()
+    if stripped.startswith("Document not found"):
+        return DocumentContextView(None, stripped)
+    if stripped.startswith("Error "):
+        return DocumentContextView(None, stripped)
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return DocumentContextView(None, stripped)
+    if not isinstance(payload, dict):
+        return DocumentContextView(None, stripped)
+    return DocumentContextView(_shape_document_context(payload), None)
+
+
+def _shape_context_hit(entry: dict[str, Any]) -> dict[str, Any]:
+    """Keep hit scalars and context sections; drop paths and hashes."""
+    shaped: dict[str, Any] = {}
+    for key in _HIT_SCALAR_FIELDS:
+        if key not in entry:
+            continue
+        value = entry[key]
+        if value is None or value == "":
+            continue
+        shaped[key] = value
+    for key in _CONTEXT_SECTIONS:
+        if key not in entry:
+            continue
+        shaped[key] = _sanitize_context_value(entry[key])
+    # Catalog-only rows from ``search_catalog_documents`` without wrap.
+    if "catalog" not in shaped and any(field in entry for field in _PUBLIC_FIELDS):
+        catalog = _shape_document(entry)
+        if any(value is not None for value in catalog.values()):
+            shaped["catalog"] = {
+                key: value for key, value in catalog.items() if value is not None
+            }
+            if "doc_id" not in shaped and catalog.get("doc_id"):
+                shaped["doc_id"] = catalog["doc_id"]
+    return shaped
+
+
+def _shape_document_context(entry: dict[str, Any]) -> dict[str, Any]:
+    """Sanitize one document context bundle for the browser."""
+    shaped: dict[str, Any] = {}
+    doc_id = entry.get("doc_id")
+    if doc_id:
+        shaped["doc_id"] = str(doc_id)
+    for key in _CONTEXT_SECTIONS:
+        if key not in entry:
+            continue
+        shaped[key] = _sanitize_context_value(entry[key])
+    return shaped
+
+
+def _sanitize_context_value(value: Any) -> Any:
+    """Recursively drop secrets/paths from nested context JSON."""
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_context_value(item)
+            for key, item in value.items()
+            if key not in _DROP_KEYS
+        }
+    if isinstance(value, list):
+        return [_sanitize_context_value(item) for item in value]
+    return value

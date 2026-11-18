@@ -1,11 +1,50 @@
 const form = document.querySelector("#query-form");
+const contextForm = document.querySelector("#context-form");
 const queryInput = document.querySelector("#query");
 const statusLine = document.querySelector("#status");
+const CONTEXT_SECTION_LABELS = {
+  catalog: "Katalog",
+  lifecycle: "Životní cyklus",
+  geo: "Geo",
+  versions: "Verze",
+  locality_links: "Lokality",
+  related_documents: "Související dokumenty",
+  neighbor_chunks: "Sousední chunky",
+};
+
+document.querySelectorAll(".mode-btn").forEach((button) => {
+  button.addEventListener("click", () => setMode(button.dataset.mode));
+});
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   void submitQuery();
 });
+
+contextForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const submitter = event.submitter;
+  const action = submitter?.value || "vector";
+  void submitContextSearch(action);
+});
+
+document.querySelector("#close-doc-context").addEventListener("click", () => {
+  const panel = document.querySelector("#document-context");
+  panel.hidden = true;
+  document.querySelector("#document-context-body").replaceChildren();
+});
+
+function setMode(mode) {
+  document.querySelectorAll(".mode-btn").forEach((button) => {
+    const active = button.dataset.mode === mode;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  document.querySelectorAll("[data-panel]").forEach((node) => {
+    node.hidden = node.dataset.panel !== mode;
+  });
+  setStatus("");
+}
 
 async function submitQuery() {
   const query = queryInput.value.trim();
@@ -419,4 +458,264 @@ async function readJson(response) {
   } catch (_error) {
     return {};
   }
+}
+
+function contextFlags() {
+  const flags = {};
+  contextForm.querySelectorAll(".section-flags input[type=checkbox]").forEach((box) => {
+    flags[box.name] = box.checked;
+  });
+  return flags;
+}
+
+async function submitContextSearch(action) {
+  const query = document.querySelector("#context-query").value.trim();
+  const limit = Number(document.querySelector("#context-limit").value) || 3;
+  setStatus("");
+  document.querySelector("#context-note").hidden = true;
+  document.querySelector("#context-hits").replaceChildren();
+  document.querySelector("#document-context").hidden = true;
+  if (action === "vector" && !query) {
+    setStatus("Napiš dotaz pro vektorové hledání.");
+    return;
+  }
+  const response =
+    action === "catalog"
+      ? await fetch("/api/catalog/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query,
+            limit: Math.min(Math.max(limit, 1), 100),
+            include_context: document.querySelector("#catalog-wrap").checked,
+          }),
+        })
+      : await fetch("/api/search/context", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query,
+            limit: Math.min(Math.max(limit, 1), 20),
+            ...contextFlags(),
+          }),
+        });
+  if (response.status === 401) {
+    window.location.href = "/auth/login";
+    return;
+  }
+  const body = await readJson(response);
+  if (!response.ok) {
+    setStatus(body.detail || "Hledání se nepovedlo.");
+    return;
+  }
+  renderContextHits(body.hits || [], body.message || null);
+}
+
+function renderContextHits(hits, message) {
+  const root = document.querySelector("#context-hits");
+  const note = document.querySelector("#context-note");
+  root.replaceChildren();
+  if (message) {
+    note.hidden = false;
+    note.textContent = message;
+  } else {
+    note.hidden = true;
+    note.textContent = "";
+  }
+  if (!hits.length && !message) {
+    note.hidden = false;
+    note.textContent = "Nic se nenašlo.";
+    return;
+  }
+  hits.forEach((hit, index) => {
+    root.append(contextHitCard(hit, index));
+  });
+}
+
+function contextHitCard(hit, index) {
+  const article = document.createElement("article");
+  article.className = "context-hit";
+  const heading = document.createElement("h3");
+  const catalog = hit.catalog || {};
+  const title =
+    catalog.filename ||
+    hit.parent_document ||
+    hit.doc_id ||
+    `Hit ${index + 1}`;
+  heading.textContent = title;
+  article.append(heading);
+  const meta = document.createElement("p");
+  meta.className = "meta";
+  meta.textContent = [
+    hit.source_type,
+    hit.doc_id,
+    hit.chunk_index != null ? `chunk ${hit.chunk_index}` : "",
+    hit.page_number != null ? `strana ${hit.page_number}` : "",
+    hit.score != null ? `score ${Number(hit.score).toFixed(3)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  article.append(meta);
+  if (hit.content) {
+    const content = document.createElement("p");
+    content.className = "content";
+    content.textContent = hit.content;
+    article.append(content);
+  }
+  if (hit.doc_id) {
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "link";
+    open.textContent = "Načíst kontext dokumentu";
+    open.addEventListener("click", () => {
+      void loadDocumentContext(hit.doc_id, hit.chunk_index);
+    });
+    article.append(open);
+  }
+  for (const key of Object.keys(CONTEXT_SECTION_LABELS)) {
+    if (!(key in hit) || hit[key] == null) {
+      continue;
+    }
+    article.append(contextSection(key, hit[key]));
+  }
+  return article;
+}
+
+function contextSection(key, value) {
+  const details = document.createElement("details");
+  details.className = "context-section";
+  details.open = key === "catalog" || key === "neighbor_chunks";
+  const summary = document.createElement("summary");
+  summary.textContent = sectionSummary(key, value);
+  details.append(summary);
+  const body = document.createElement("div");
+  body.className = "context-section-body";
+  body.append(renderContextValue(key, value));
+  details.append(body);
+  return details;
+}
+
+function sectionSummary(key, value) {
+  const label = CONTEXT_SECTION_LABELS[key] || key;
+  if (key === "locality_links" && value && typeof value === "object") {
+    return `${label} (${value.returned ?? (value.links || []).length})`;
+  }
+  if (key === "related_documents" && Array.isArray(value)) {
+    return `${label} (${value.length})`;
+  }
+  if (key === "neighbor_chunks" && Array.isArray(value)) {
+    return `${label} (${value.length})`;
+  }
+  if (key === "versions" && value && typeof value === "object") {
+    return `${label} (${value.count ?? (value.versions || []).length})`;
+  }
+  return label;
+}
+
+function renderContextValue(key, value) {
+  if (key === "neighbor_chunks" && Array.isArray(value)) {
+    const list = document.createElement("div");
+    value.forEach((chunk) => {
+      const row = document.createElement("p");
+      row.className = "neighbor";
+      const head = document.createElement("span");
+      head.className = "meta";
+      head.textContent = `chunk ${chunk.chunk_index}${
+        chunk.page != null ? `, strana ${chunk.page}` : ""
+      }`;
+      const text = document.createElement("span");
+      text.className = "content";
+      text.textContent = chunk.text || "";
+      row.append(head, document.createElement("br"), text);
+      list.append(row);
+    });
+    return list;
+  }
+  if (key === "locality_links" && value && typeof value === "object") {
+    const list = document.createElement("ul");
+    list.className = "locality-list";
+    for (const link of value.links || []) {
+      const item = document.createElement("li");
+      item.textContent = [
+        link.name || link.obec_id,
+        link.cast_obce_name || link.cast_obce,
+        link.matched_text,
+        link.verification_status,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      list.append(item);
+    }
+    if (!list.childElementCount) {
+      const empty = document.createElement("p");
+      empty.className = "quiet";
+      empty.textContent = "Žádné lokality.";
+      return empty;
+    }
+    return list;
+  }
+  if (key === "related_documents" && Array.isArray(value)) {
+    const list = document.createElement("ul");
+    value.forEach((doc) => {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "link";
+      button.textContent =
+        doc.filename || doc.catalog?.filename || doc.doc_id || "dokument";
+      if (doc.doc_id) {
+        button.addEventListener("click", () => {
+          void loadDocumentContext(doc.doc_id);
+        });
+      }
+      item.append(button);
+      list.append(item);
+    });
+    if (!list.childElementCount) {
+      const empty = document.createElement("p");
+      empty.className = "quiet";
+      empty.textContent = "Žádné související dokumenty.";
+      return empty;
+    }
+    return list;
+  }
+  const pre = document.createElement("pre");
+  pre.className = "context-json";
+  pre.textContent = JSON.stringify(value, null, 2);
+  return pre;
+}
+
+async function loadDocumentContext(docId, chunkIndex) {
+  const params = new URLSearchParams(contextFlags());
+  if (chunkIndex != null && chunkIndex !== "") {
+    params.set("chunk_index", String(chunkIndex));
+  }
+  const response = await fetch(
+    `/api/documents/${encodeURIComponent(docId)}/context?${params}`,
+  );
+  if (response.status === 401) {
+    window.location.href = "/auth/login";
+    return;
+  }
+  const body = await readJson(response);
+  if (!response.ok) {
+    setStatus(body.detail || "Kontext dokumentu se nepovedl načíst.");
+    return;
+  }
+  const panel = document.querySelector("#document-context");
+  const root = document.querySelector("#document-context-body");
+  root.replaceChildren();
+  const context = body.context || {};
+  const title = document.createElement("p");
+  title.className = "meta";
+  title.textContent = context.doc_id || docId;
+  root.append(title);
+  for (const key of Object.keys(CONTEXT_SECTION_LABELS)) {
+    if (!(key in context) || context[key] == null) {
+      continue;
+    }
+    root.append(contextSection(key, context[key]));
+  }
+  panel.hidden = false;
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
